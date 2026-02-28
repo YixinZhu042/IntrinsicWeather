@@ -114,6 +114,12 @@ body {
   overflow: hidden;
 }
 
+/* Hide navigation arrows - swipe only */
+.results-carousel .slider-navigation-previous,
+.results-carousel .slider-navigation-next {
+  display: none !important;
+}
+
 .results-carousel .item {
   margin: 5px;
   overflow: hidden;
@@ -121,10 +127,62 @@ body {
   border-radius: 10px;
   padding: 0;
   font-size: 0;
+  min-height: 400px;
 }
 
-.results-carousel video {
+.results-carousel video,
+.results-carousel img {
   margin: 0;
+  width: 100%;
+  height: auto;
+  display: block;
+  vertical-align: top;
+}
+
+/* Results comparison carousel (image + description per slide) */
+.results-comparison-carousel {
+  overflow: hidden;
+}
+
+/* Hide navigation arrows - swipe only like Gallery */
+.results-comparison-carousel .slider-navigation-previous,
+.results-comparison-carousel .slider-navigation-next {
+  display: none !important;
+}
+
+/* Show pagination dots - always visible, click to switch slide */
+.results-comparison-carousel .slider-pagination {
+  display: flex !important;
+  position: relative;
+  bottom: auto;
+  margin-top: 1rem;
+  padding: 0.5rem 0;
+}
+
+.results-comparison-carousel .slider-pagination .slider-page {
+  background: #000;
+}
+
+.results-comparison-carousel .slider-pagination .slider-page.is-active {
+  background: #000;
+}
+
+.results-comparison-carousel .item {
+  margin: 0 10px;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.results-comparison-carousel .item img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.results-comparison-carousel .item .content {
+  padding: 1rem 1.5rem;
 }
 
 
@@ -155,3 +213,6 @@ body {
 #interpolation-image-wrapper img {
   border-radius: 5px;
 }
+
+/* Dataset section */
+.mt-5 { margin-top: 2.5rem; }
