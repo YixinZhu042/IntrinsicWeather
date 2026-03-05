@@ -10,7 +10,7 @@
         content="A framework for controllable weather editing in intrinsic space.">
   <meta name="keywords" content="image editintg, diffusion, rendering">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>IntrinsicWeather: Controllable Weather Editing in Intrinsic Space</title>
+  <title>WeatherDiffusion: Controllable Weather Editing in Intrinsic Space</title>
 
   <!-- Global site tag (gtag.js) - Google Analytics -->
   <!-- <script async src="https://www.googletagmanager.com/gtag/js?id=G-PYVRSFMDRL"></script>
@@ -93,7 +93,7 @@
     <div class="container is-max-desktop">
       <div class="columns is-centered">
         <div class="column has-text-centered">
-          <h1 class="title is-1 publication-title">IntrinsicWeather: Controllable Weather Editing in Intrinsic Space</h1>
+          <h1 class="title is-1 publication-title">WeatherDiffusion: Controllable Weather Editing in Intrinsic Space</h1>
           <p class="is-size-5 has-text-grey">CVPR 2026</p>
           <div class="is-size-5 publication-authors">
             <span class="author-block">
@@ -183,11 +183,11 @@
     <div class="hero-body">
       <img src="./static/images/teaser.png" alt="Teaser image" style="width: 100%; height: auto;">
       <h2 class="content has-text-justified">
-        IntrinsicWeather is a novel framework for controllable weather editing in intrisinc space. Our framework includes two
+        WeatherDiffusion is a novel framework for controllable weather editing in intrisinc space. Our framework includes two
         components, an inverse renderer and a forward renderer. The inverse renderer decomposes an input image into intrinsic maps, including
         weather-invariant material maps (albedo, roughness, metallicity), a normal map, and an irradiance map that captures illumination and
         weather effects. The forward renderer then combines these maps with a prompt specifying the target weather to synthesize a new image.
-        By disentangling materials, geometry, and illumination, IntrinsicWeather enables realistic and controllable weather manipulation.
+        By disentangling materials, geometry, and illumination, WeatherDiffusion enables realistic and controllable weather manipulation.
       </h2>
     </div>
   </div>
@@ -262,7 +262,7 @@
     </div>
     <div class="content has-text-justified">
       <p>
-        Overview of IntrinsicWeather.
+        Overview of WeatherDiffusion.
         We propose a diffusion-based framework for controllable weather editing for autonomous driving in intrinsic space. The weather-aware inverse renderer decomposes images into weather-invariant and weather-variant maps, while the weather-conditioned forward renderer re-renders images based on given decomposed maps and text prompts that specify the target condition. 
        For the inverse renderer, we design intrinsic map-aware attention to help the inverse renderer focus on important regions corresponding to target intrinsic maps, where the learned map embeddings filter patch tokens via a gating mechanism. 
       For the forward renderer, we design an alpha interpolation in the CLIP semantic space to achieve fine-grained weather control, leveraging the prior in the original Stable Diffusion. By sampling different alpha values, the forward renderer can render natural transitional weather conditions.
@@ -453,7 +453,7 @@
         <img src="./static/images/inverse.png" alt="Inverse rendering" style="width: 100%;">
         <div class="content has-text-justified">
           <p>
-            Our IntrinsicWeather
+            Our WeatherDiffusion
             removes the disturbance and generates a reasonable estimation.
             Other map comparisons are shown in the supplementary material.
           </p>
@@ -463,7 +463,7 @@
         <img src="./static/images/forward.png" alt="Forward synthesis" style="width: 100%;">
         <div class="content has-text-justified">
           <p>
-            Our IntrinsicWeather produces images
+            Our WeatherDiffusion produces images
             that better align with the text description than RGB↔X/DiffusionRenderer, and
             avoid abnormal textures and illuminations.
           </p>
