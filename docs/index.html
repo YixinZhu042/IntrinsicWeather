@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <!-- Ensure correct base URL for relative paths (fixes file not found when opened from different contexts) -->
+  <script>
+    (function(){var b=location.href;b=b.substring(0,b.lastIndexOf('/')+1);var t=document.getElementsByTagName('base')[0];if(t)t.href=b;else{var e=document.createElement('base');e.href=b;document.head.insertBefore(e,document.head.firstChild);}})();
+  </script>
+  <meta name="description"
+        content="A framework for controllable weather editing in intrinsic space.">
+  <meta name="keywords" content="image editintg, diffusion, rendering">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WeatherDiffusion: Controllable Weather Editing in Intrinsic Space</title>
+
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <!-- <script async src="https://www.googletagmanager.com/gtag/js?id=G-PYVRSFMDRL"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+
+    function gtag() {
+      dataLayer.push(arguments);
+    }
+
+    gtag('js', new Date());
+
+    gtag('config', 'G-PYVRSFMDRL');
+  </script> -->
+
+  <link href="https://fonts.googleapis.com/css?family=Google+Sans|Noto+Sans|Castoro"
+        rel="stylesheet">
+
+  <link rel="stylesheet" href="./static/css/bulma.min.css">
+  <link rel="stylesheet" href="./static/css/bulma-carousel.min.css">
+  <link rel="stylesheet" href="./static/css/bulma-slider.min.css">
+  <link rel="stylesheet" href="./static/css/fontawesome.all.min.css">
+  <link rel="stylesheet"
+        href="https://cdn.jsdelivr.net/gh/jpswalsh/academicons@1/css/academicons.min.css">
+  <link rel="stylesheet" href="./static/css/index.css">
+  <link rel="icon" href="./static/images/favicon.svg">
+
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+  <script defer src="./static/js/fontawesome.all.min.js"></script>
+  <script src="./static/js/bulma-carousel.min.js"></script>
+  <script src="./static/js/bulma-slider.min.js"></script>
+  <script src="./static/js/index.js"></script>
+</head>
+<body>
+
+<nav class="navbar" role="navigation" aria-label="main navigation">
+  <div class="navbar-brand">
+    <a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false">
+      <span aria-hidden="true"></span>
+      <span aria-hidden="true"></span>
+      <span aria-hidden="true"></span>
+    </a>
+  </div>
+  <!-- <div class="navbar-menu">
+    <div class="navbar-start" style="flex-grow: 1; justify-content: center;">
+      <a class="navbar-item" href="https://yixinzhu042.github.io/">
+        <span class="icon">
+          <i class="fas fa-home"></i>
+        </span>
+      </a> -->
+      <!--
+
+      <div class="navbar-item has-dropdown is-hoverable">
+        <a class="navbar-link">
+          More Research
+        </a>
+        <div class="navbar-dropdown">
+          <a class="navbar-item" href="https://hypernerf.github.io">
+            HyperNeRF
+          </a>
+          <a class="navbar-item" href="https://nerfies.github.io">
+            Nerfies
+          </a>
+          <a class="navbar-item" href="https://latentfusion.github.io">
+            LatentFusion
+          </a>
+          <a class="navbar-item" href="https://photoshape.github.io">
+            PhotoShape
+          </a> -->
+        <!-- </div>
+      </div> -->
+    <!-- </div>
+
+  </div> -->
+</nav>
+
+
+<section class="hero">
+  <div class="hero-body">
+    <div class="container is-max-desktop">
+      <div class="columns is-centered">
+        <div class="column has-text-centered">
+          <h1 class="title is-1 publication-title">WeatherDiffusion: Controllable Weather Editing in Intrinsic Space</h1>
+          <p class="is-size-5 has-text-grey">CVPR 2026</p>
+          <div class="is-size-5 publication-authors">
+            <span class="author-block">
+              <a href="https://yixinzhu042.github.io/">Yixin Zhu</a><sup>1</sup>,</span>
+            <span class="author-block">
+              <a href="https://github.com/NK-CS-ZZL">Zuo-Liang Zhu</a><sup>2</sup>,</span>
+            <span class="author-block">
+              <a href="https://www.patternrecognition.asia/jian/">Jian Yang</a><sup>1</sup>,
+            </span>
+            <span class="author-block">
+              <a href="https://miloshasan.net/">Miloš Hašan</a><sup>3</sup>,
+            </span>
+            <span class="author-block">
+              <a href="https://csjinxie.github.io/">Jin Xie</a><sup>1</sup>,
+            </span>
+            <span class="author-block">
+              <a href="https://wangningbei.github.io/">Beibei Wang</a><sup>1</sup>
+            </span>
+
+          <div class="is-size-5 publication-authors">
+            <span class="author-block"><sup>1</sup>Nanjing University,</span>
+            <span class="author-block"><sup>2</sup>Nankai University,</span>
+            <span class="author-block"><sup>3</sup>NVIDIA</span>
+          </div>
+
+          <div class="column has-text-centered">
+            <div class="publication-links">
+              <!-- PDF Link. -->
+              <span class="link-block">
+                <a href=""
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="fas fa-file-pdf"></i>
+                  </span>
+                  <span>Paper (Coming soon)</span>
+                </a>
+              </span>
+              <span class="link-block">
+                <a href="https://arxiv.org/pdf/2508.06982v6"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="ai ai-arxiv"></i>
+                  </span>
+                  <span>arXiv</span>
+                </a>
+              </span>
+              <!-- Video Link. -->
+              <!-- <span class="link-block">
+                <a href=""
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="fab fa-youtube"></i>
+                  </span>
+                  <span>Video</span>
+                </a>
+              </span> -->
+              <!-- Code Link. -->
+              <span class="link-block">
+                <a href=""
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="fab fa-github"></i>
+                  </span>
+                  <span>Code (Coming Soon)</span>
+                  </a>
+              </span>
+              <!-- Dataset Link. -->
+              <span class="link-block">
+                <a href=""
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="far fa-images"></i>
+                  </span>
+                  <span>Data (Coimg soon)</span>
+                  </a>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="hero teaser">
+  <div class="container is-max-desktop">
+    <div class="hero-body">
+      <img src="./static/images/teaser.png" alt="Teaser image" style="width: 100%; height: auto;">
+      <h2 class="content has-text-justified">
+        WeatherDiffusion is a novel framework for controllable weather editing in intrisinc space. Our framework includes two
+        components, an inverse renderer and a forward renderer. The inverse renderer decomposes an input image into intrinsic maps, including
+        weather-invariant material maps (albedo, roughness, metallicity), a normal map, and an irradiance map that captures illumination and
+        weather effects. The forward renderer then combines these maps with a prompt specifying the target weather to synthesize a new image.
+        By disentangling materials, geometry, and illumination, WeatherDiffusion enables realistic and controllable weather manipulation.
+      </h2>
+    </div>
+  </div>
+</section>
+
+<section class="hero is-light is-small">
+  <div class="hero-body">
+    <div class="container">
+      <h2 class="title is-3 has-text-centered mb-5">Weather Editing Gallery</h2>
+      <div id="results-carousel" class="carousel results-carousel">
+        <div class="item item-gallery-1">
+          <img src="./static/images/gallery_1.png" alt="Gallery image 1">
+        </div>
+        <div class="item item-gallery-2">
+          <img src="./static/images/gallery_2.png" alt="Gallery image 2">
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <!-- Abstract. -->
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">Abstract</h2>
+        <div class="content has-text-justified">
+          <p>
+            We present WeatherDiffusion, a diffusion-based framework for controllable weather editing in intrinsic space.
+          </p>
+          <p>
+            Our framework includes two components based on diffusion priors: an inverse renderer that estimates material properties,
+            scene geometry, and lighting as intrinsic maps from an input image, and a forward renderer that utilizes these geometry 
+            and material maps along with a text prompt that describes specific weather conditions to generate a final image. 
+            The intrinsic maps enhance controllability compared to traditional pixel-space editing approaches. We propose
+            an intrinsic map-aware attention mechanism that improves spatial correspondence and decomposition quality in large
+            outdoor scenes. For forward rendering, we leverage CLIP-space interpolation of weather prompts to achieve fine-grained weather control. We also introduce a synthetic
+            and a real-world dataset, containing 38k and 18k images under various weather conditions, each with intrinsic map annotations.
+          </p>
+          <p>
+            WeatherDiffusion outperforms state-of-the-art pixel-space editing approaches, weather restoration methods, and rendering-based methods, 
+            showing promise for downstream tasks such as autonomous driving, enhancing the robustness of detection and segmentation in challenging weather scenarios.
+          </p>
+        </div>
+      </div>
+    </div>
+    <!--/ Abstract. -->
+
+    <!-- Paper video. -->
+    <!-- <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">Video</h2>
+        <div class="publication-video">
+          <iframe src="https://www.youtube.com/embed/MrKrnHhk8IA?rel=0&amp;showinfo=0"
+                  frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>
+        </div>
+      </div>
+    </div> -->
+    <!--/ Paper video. -->
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3">Method</h2>
+    <div class="columns is-centered">
+      <div class="column is-full-width">
+        <img src="./static/images/pipeline.png" alt="Pipeline overview" style="width: 100%;">
+      </div>
+    </div>
+    <div class="content has-text-justified">
+      <p>
+        Overview of WeatherDiffusion.
+        We propose a diffusion-based framework for controllable weather editing for autonomous driving in intrinsic space. The weather-aware inverse renderer decomposes images into weather-invariant and weather-variant maps, while the weather-conditioned forward renderer re-renders images based on given decomposed maps and text prompts that specify the target condition. 
+       For the inverse renderer, we design intrinsic map-aware attention to help the inverse renderer focus on important regions corresponding to target intrinsic maps, where the learned map embeddings filter patch tokens via a gating mechanism. 
+      For the forward renderer, we design an alpha interpolation in the CLIP semantic space to achieve fine-grained weather control, leveraging the prior in the original Stable Diffusion. By sampling different alpha values, the forward renderer can render natural transitional weather conditions.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3">Dataset</h2>
+    <p class="content has-text-justified">
+      Our WeatherSynthetic dataset contains scenes under different weather conditions. Each sample includes the rendered image, 
+      corresponding irradiance map, and intrinsic property maps (albedo, metallic, normal, roughness). Here is a demo.
+    </p>
+    
+    <!-- Weather videos: 3 per row, 2 rows -->
+    <div class="columns is-multiline is-centered">
+      <!-- Row 1: early_morning, foggy, overcast -->
+      <div class="column is-4">
+        <div class="content">
+          <h4 class="title is-5 has-text-centered">Early Morning</h4>
+          <p class="has-text-grey-light is-size-7">Image</p>
+          <video id="dataset-early-morning-img" controls muted loop playsinline autoplay preload="auto" height="100%">
+            <source src="./static/videos/image_early_morning.mp4"
+                    type="video/mp4">
+          </video>
+          <p class="has-text-grey-light is-size-7">Irradiance</p>
+          <video id="dataset-early-morning-irr" controls muted loop playsinline autoplay preload="auto" height="100%">
+            <source src="./static/videos/irradiance_early_morning.mp4"
+                    type="video/mp4">
+          </video>
+        </div>
+      </div>
+      <div class="column is-4">
+        <div class="content">
+          <h4 class="title is-5 has-text-centered">Foggy</h4>
+          <p class="has-text-grey-light is-size-7">Image</p>
+          <video id="dataset-foggy-img" controls muted loop playsinline autoplay preload="auto" height="100%">
+            <source src="./static/videos/image_foggy.mp4"
+                    type="video/mp4">
+          </video>
+          <p class="has-text-grey-light is-size-7">Irradiance</p>
+          <video id="dataset-foggy-irr" controls muted loop playsinline autoplay preload="auto" height="100%">
+            <source src="./static/videos/irradiance_foggy.mp4"
+                    type="video/mp4">
+          </video>
+        </div>
+      </div>
+      <div class="column is-4">
+        <div class="content">
+          <h4 class="title is-5 has-text-centered">Overcast</h4>
+          <p class="has-text-grey-light is-size-7">Image</p>
+          <video id="dataset-overcast-img" controls muted loop playsinline autoplay preload="auto" height="100%">
+            <source src="./static/videos/image_overcast.mp4"
+                    type="video/mp4">
+          </video>
+          <p class="has-text-grey-light is-size-7">Irradiance</p>
+          <video id="dataset-overcast-irr" controls muted loop playsinline autoplay preload="auto" height="100%">
+            <source src="./static/videos/irradiance_overcast.mp4"
+                    type="video/mp4">
+          </video>
+        </div>
+      </div>
+      <!-- Row 2: rainy, snowy, sunny -->
+      <div class="column is-4">
+        <div class="content">
+          <h4 class="title is-5 has-text-centered">Rainy</h4>
+          <p class="has-text-grey-light is-size-7">Image</p>
+          <video id="dataset-rainy-img" controls muted loop playsinline autoplay preload="auto" height="100%">
+            <source src="./static/videos/image_rainy.mp4"
+                    type="video/mp4">
+          </video>
+          <p class="has-text-grey-light is-size-7">Irradiance</p>
+          <video id="dataset-rainy-irr" controls muted loop playsinline autoplay preload="auto" height="100%">
+            <source src="./static/videos/irradiance_rainy.mp4"
+                    type="video/mp4">
+          </video>
+        </div>
+      </div>
+      <div class="column is-4">
+        <div class="content">
+          <h4 class="title is-5 has-text-centered">Snowy</h4>
+          <p class="has-text-grey-light is-size-7">Image</p>
+          <video id="dataset-snowy-img" controls muted loop playsinline autoplay preload="auto" height="100%">
+            <source src="./static/videos/image_snowy.mp4"
+                    type="video/mp4">
+          </video>
+          <p class="has-text-grey-light is-size-7">Irradiance</p>
+          <video id="dataset-snowy-irr" controls muted loop playsinline autoplay preload="auto" height="100%">
+            <source src="./static/videos/irradiance_snowy.mp4"
+                    type="video/mp4">
+          </video>
+        </div>
+      </div>
+      <div class="column is-4">
+        <div class="content">
+          <h4 class="title is-5 has-text-centered">Sunny</h4>
+          <p class="has-text-grey-light is-size-7">Image</p>
+          <video id="dataset-sunny-img" controls muted loop playsinline autoplay preload="auto" height="100%">
+            <source src="./static/videos/image_sunny.mp4"
+                    type="video/mp4">
+          </video>
+          <p class="has-text-grey-light is-size-7">Irradiance</p>
+          <video id="dataset-sunny-irr" controls muted loop playsinline autoplay preload="auto" height="100%">
+            <source src="./static/videos/irradiance_sunny.mp4"
+                    type="video/mp4">
+          </video>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Intrinsic Properties (shared across weather conditions) -->
+    <div class="mt-5">
+      <h3 class="title is-4">Intrinsic Properties</h3>
+      <p class="content has-text-justified">
+        Weather-invariant intrinsic maps: albedo, metallic, normal, and roughness.
+      </p>
+      <div class="columns is-multiline is-centered">
+        <div class="column is-3">
+          <div class="content">
+            <p class="has-text-centered is-size-7">Albedo</p>
+            <video id="property-albedo" controls muted loop playsinline autoplay preload="auto" height="100%">
+              <source src="./static/videos/property_albedo.mp4"
+                      type="video/mp4">
+            </video>
+          </div>
+        </div>
+        <div class="column is-3">
+          <div class="content">
+            <p class="has-text-centered is-size-7">Metallic</p>
+            <video id="property-metallic" controls muted loop playsinline autoplay preload="auto" height="100%">
+              <source src="./static/videos/property_metallic.mp4"
+                      type="video/mp4">
+            </video>
+          </div>
+        </div>
+        <div class="column is-3">
+          <div class="content">
+            <p class="has-text-centered is-size-7">Normal</p>
+            <video id="property-normal" controls muted loop playsinline autoplay preload="auto" height="100%">
+              <source src="./static/videos/property_normal.mp4"
+                      type="video/mp4">
+            </video>
+          </div>
+        </div>
+        <div class="column is-3">
+          <div class="content">
+            <p class="has-text-centered is-size-7">Roughness</p>
+            <video id="property-roughness" controls muted loop playsinline autoplay preload="auto" height="100%">
+              <source src="./static/videos/property_roughness.mp4"
+                      type="video/mp4">
+            </video>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+
+
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3">Results</h2>
+    <div id="results-comparison-carousel" class="carousel results-comparison-carousel">
+      <div class="item">
+        <img src="./static/images/editing_comparison.png" alt="Editing comparison" style="width: 100%;">
+        <div class="content has-text-justified">
+          <p>
+            Pixel-space methods struggle to preserve scene geometry and materials, often introducing hallucinated objects, distorted structures, or unnatural lighting. In contrast, our
+            intrinsic-space editing preserves geometry and appearance while modifying only weather-related components. We also show intrinsic maps (albedo + normal) for our method, demonstrating explicit
+            disentanglement of material, geometry, and illumination.
+          </p>
+        </div>
+      </div>
+      <div class="item">
+        <img src="./static/images/fine-grained.png" alt="Fine-grained editing" style="width: 100%;">
+        <div class="content has-text-justified">
+          <p>
+            Our editing results show natural transitions.
+          </p>
+        </div>
+      </div>
+      <div class="item">
+        <img src="./static/images/inverse.png" alt="Inverse rendering" style="width: 100%;">
+        <div class="content has-text-justified">
+          <p>
+            Our WeatherDiffusion
+            removes the disturbance and generates a reasonable estimation.
+            Other map comparisons are shown in the supplementary material.
+          </p>
+        </div>
+      </div>
+      <div class="item">
+        <img src="./static/images/forward.png" alt="Forward synthesis" style="width: 100%;">
+        <div class="content has-text-justified">
+          <p>
+            Our WeatherDiffusion produces images
+            that better align with the text description than RGB↔X/DiffusionRenderer, and
+            avoid abnormal textures and illuminations.
+          </p>
+        </div>
+      </div>
+    </div>
+    <p class="has-text-grey is-size-7 mt-3 has-text-centered">← Swipe or click dots to browse →</p>
+  </div>
+</section>
+
+
+
+<section class="section" id="BibTeX">
+  <div class="container is-max-desktop content">
+    <h2 class="title">BibTeX</h2>
+    <pre><code>@misc{zhu2026weatherdiffusioncontrollableweatherediting,
+      title={WeatherDiffusion: Controllable Weather Editing in Intrinsic Space}, 
+      author={Yixin Zhu and Zuoliang Zhu and Jian Yang and Miloš Hašan and Jin Xie and Beibei Wang},
+      year={2026},
+      eprint={2508.06982},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2508.06982}, 
+}</code></pre>
+  </div>
+</section>
+
+
+<footer class="footer">
+    <div class="columns is-centered">
+      <div class="column is-8">
+        <div class="content">
+          <!-- <p>
+            This website is licensed under a <a rel="license"
+                                                href="http://creativecommons.org/licenses/by-sa/4.0/">Creative
+            Commons Attribution-ShareAlike 4.0 International License</a>.
+          </p> -->
+          <p>
+            The template is borrowed from <a
+              href="https://github.com/nerfies/nerfies.github.io">Nerfies</a>. We thank the authors for making their code publicly available.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
