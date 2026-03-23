@@ -16,7 +16,7 @@ from data.load_image import load_exr_image
 import h5py
 import json
 
-class DrivingDataSet(Dataset):
+class WeatherSynthetic(Dataset):
     def __init__(self, root_dir, scene_list_file, imWidth=512, imHeight=512, prompt_json_file=None):
         """
         root_dir: root dir, e.g., '/path/to/dataset'
@@ -101,7 +101,9 @@ class DrivingDataSet(Dataset):
         return batchDict
     
 if __name__ == "__main__":
-    train_dataset = DrivingDataSet("/mnt/d/WeatherSynthetic", "scene.txt", prompt_json_file="prompt.json")
+    # Replace data_root with the actual path to your dataset folder
+    data_root = "path/to/your/WeatherSynthetic" 
+    train_dataset = WeatherSynthetic(data_root, "scene.txt", prompt_json_file="prompt.json")
     dataloader = DataLoader(train_dataset, batch_size=4, shuffle=True)
     for i, batch in enumerate(dataloader):
         print(batch["im"].shape)
