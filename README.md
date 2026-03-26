@@ -6,12 +6,14 @@
 
 [Yixin Zhu](https://yixinzhu042.github.io/), [Zuo-Liang Zhu](https://github.com/NK-CS-ZZL), [Jian Yang](https://www.patternrecognition.asia/jian/), [Miloš Hašan](https://miloshasan.net/), [Jin Xie](https://csjinxie.github.io/), [Beibei Wang](https://wangningbei.github.io/)
 
+[[Project page](https://yixinzhu042.github.io/IntrinsicWeather/)] [[Paper](https://arxiv.org/pdf/2508.06982v6)] [[Supplementary](assets/supp.pdf)]
+
 ---
 
 
 
 ## TODO
-
+- [✅] Release the paper and supplementary material
 - [✅] Release WeatherSynthetic dataset 
 - [ ] Release WeatherReal construction pipeline
 - [ ] Release pretrained checkpoints
