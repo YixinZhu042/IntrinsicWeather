@@ -175,7 +175,7 @@ for step, batch in enumerate(dataloader):
         output_size = (original_image.shape[2] // 16, original_image.shape[3] // 16)
         img_len = output_size[0] * output_size[1]
         map_aware_mask = imaa(patch_tokens=patch_tokens, output_size=output_size, map_ids=torch.tensor([i]).to(device))
-        attn_mask = build_attn_mask(map_aware_mask, 154, img_len, 0.0)
+        attn_mask = build_attn_mask(map_aware_mask, 154, img_len, 0.7)
 
         output_maps = pipe(
             image=original_image,

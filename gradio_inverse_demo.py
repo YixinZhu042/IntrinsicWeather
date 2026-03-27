@@ -173,7 +173,7 @@ def run_inference(
                 output_size=output_size,
                 map_ids=torch.tensor([i], device=device),
             )
-            attn_mask = build_attn_mask(map_aware_mask, 154, img_len, 0.0)
+            attn_mask = build_attn_mask(map_aware_mask, 154, img_len, 0.7)
 
             output_maps = pipe(
                 image=original_image,
