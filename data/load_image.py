@@ -93,11 +93,11 @@ def load_ldr_image(image_path, from_srgb=False, clamp=False, normalize=False):
 
 
 def load_exr_raw(image_path, width, height):
-    """加载原始 HDR EXR，不进行 tonemapping，用于整段视频一致 tonemapping 防闪烁"""
+    """Load raw HDR EXR without tonemapping (consistent per-frame tonemapping for video)."""
     image = cv2.imread(image_path, -1)
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     image = np.nan_to_num(image, nan=0.0, posinf=1, neginf=0.0)
-    image = np.clip(image, 0, 1e4)  # 避免极端值
+    image = np.clip(image, 0, 1e4)  # clip extreme HDR values
     image = torch.from_numpy(image.astype("float32"))
     image[~torch.isfinite(image)] = 0
     image = image.permute(2, 0, 1)
@@ -125,18 +125,18 @@ def load_exr_image(image_path, width, height, tonemaping=False, clamp=False, nor
         image = torch.clamp(image, min=0.0, max=1.0)
 
     if normalize:
-        # image = image * 2 - 1  # InteriorVerse 和 Hypersim 的normal本来就在[-1,1]
+        # image = image * 2 - 1  # InteriorVerse / Hypersim normals may already be in [-1, 1]
         image = image.clamp(-1,1)
         image = torch.nn.functional.normalize(image, dim=-1, eps=1e-6)
     elif driving:
-        image = normalize_image(image, dim=-1, eps=1e-6) # DrivingScene的normal首先归一化
-        image = 2.0 * image - 1.0 # DrivingScene的normal在[0,1]上
+        image = normalize_image(image, dim=-1, eps=1e-6)  # normalize driving-scene normals first
+        image = 2.0 * image - 1.0  # driving normals stored in [0, 1] before this step
         image = normalize_image(image, dim=-1, eps=1e-6)
         # print("normal: ", image.min(), image.max())
         image = image.clamp(-1, 1)
         # image = torch.nn.functional.normalize(image, dim=-1, eps=1e-6)
         # print("normal:", image[0])
-    else: #其余属性直接放缩到[-1,1]上
+    else:  # other channels: map linearly to [-1, 1]
         image = image * 2.0 - 1.0
 
     image = image.permute(2, 0, 1)  # returns (c, h, w)

@@ -1,0 +1,25 @@
+# PyTorch: install the wheel that matches your CUDA/CPU from https://pytorch.org/
+# Example (CUDA 12.x): pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+torch
+torchvision
+
+# Diffusion / vision
+diffusers
+transformers
+accelerate
+safetensors
+
+# Images & I/O
+numpy
+Pillow
+opencv-python
+h5py
+
+# Demo & metrics
+gradio
+scikit-image
+lpips
+matplotlib
+tqdm
+requests
+huggingface_hub
