@@ -1,4 +1,4 @@
-# IntrinsicWeather: Controllable weather editing in intrinsic space
+# IntrinsicWeather: Controllable Weather Editing in Intrinsic Space
 
 <p align="center">
   <img src="assets/teaser.png" alt="IntrinsicWeather teaser" width="100%">
