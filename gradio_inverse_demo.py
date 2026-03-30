@@ -305,7 +305,10 @@ def main() -> None:
             outputs=out,
         )
 
-        _examples_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "examples")
+        # Example RGB inputs: assets/examples/image/1.png ... 10.png
+        _examples_root = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "assets", "examples", "image"
+        )
         _example_rows: list[list[str]] = []
         for i in range(1, 11):
             _p = os.path.join(_examples_root, f"{i}.png")

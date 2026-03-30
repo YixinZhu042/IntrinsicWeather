@@ -143,6 +143,30 @@ python gradio_inverse_demo.py \
 ```
 
 ---
+## Forward rendering
+Checkpoints are on Hugging Face:
+
+| Model | Link |
+|--------|------|
+| ForwardRenderer | [GilgameshYX/ForwardRenderer](https://huggingface.co/GilgameshYX/ForwardRenderer) |
+
+Download (example):
+```bash
+hf download GilgameshYX/ForwardRenderer --local-dir checkpoints/ForwardRenderer
+```
+
+### Gradio demo
+```bash
+python gradio_forward_demo.py \
+  --sd3_path sd3.5_medium \
+  --transformer_ckpt /checkpoints/ForwardRenderer/pytorch_model.bin \
+  --lora_path /checkpoints/ForwardRenderer/pytorch_lora_weights.safetensors \
+  --maps_dir assets/examples/intrinsic_maps \
+  --device cuda \
+  --port 7861
+```
+
+---
 
 ## Acknowledgements
 
