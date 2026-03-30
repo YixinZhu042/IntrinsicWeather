@@ -26,12 +26,12 @@
 
 
 ## TODO
-- [✅] Release the paper and supplementary material
-- [✅] Release WeatherSynthetic dataset 
-- [ ] Release WeatherReal construction pipeline
-- [✅] Release pretrained checkpoints
-- [✅] Add Gradio for inference
-- [ ] Release training code
+[✅] Release the paper and supplementary material
+[✅] Release WeatherSynthetic dataset 
+[ ] Release WeatherReal construction pipeline
+[✅] Release pretrained checkpoints
+[✅] Add Gradio for inference
+[ ] Release training code
 
 
 ---
