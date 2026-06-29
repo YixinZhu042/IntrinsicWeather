@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Local models, datasets, generated outputs
+WeatherSynthetic_dataset/
+sd3.5_medium/
+dinov2_base/
+dino/
+latent/
+checkpoints/
+inverse_output/
+weather_synthetic_vis.png
+
+# Internal reference scripts (not part of public release)
+Training_Code_IntrinsicWeather/

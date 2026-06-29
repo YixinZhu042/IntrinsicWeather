@@ -56,7 +56,7 @@ class WeatherSynthetic(Dataset):
                         'metallic': os.path.join(scene_path, 'property', 'metallic', f"{base_id}_metallic.exr"),
                     }
                     self.samples.append(sample)
-        print(f"DrivingDataSet: Found {len(self.samples)} samples in {root_dir}")
+        print(f"WeatherSynthetic: Found {len(self.samples)} samples in {root_dir}")
 
 
     def __len__(self):
@@ -84,7 +84,6 @@ class WeatherSynthetic(Dataset):
         except Exception:
             # Fallback to original key if path conversion fails for any reason.
             k_rel = k
-        print(k_rel)
         prompt = self.prompt_dict.get(k_rel, self.prompt_dict.get(k, ""))  
 
 
@@ -101,9 +100,16 @@ class WeatherSynthetic(Dataset):
         return batchDict
     
 if __name__ == "__main__":
-    # Replace data_root with the actual path to your dataset folder
-    data_root = "path/to/your/WeatherSynthetic" 
-    train_dataset = WeatherSynthetic(data_root, "scene.txt", prompt_json_file="prompt.json")
+    import argparse
+    parser = argparse.ArgumentParser(description="Visualize one WeatherSynthetic sample.")
+    parser.add_argument("--root", default="WeatherSynthetic_dataset")
+    parser.add_argument("--scene_list_file", default="scene.txt")
+    parser.add_argument("--prompt_json_file", default="prompt.json")
+    parser.add_argument("--output", default="weather_synthetic_vis.png")
+    args = parser.parse_args()
+
+    prompt_json = args.prompt_json_file if os.path.isfile(os.path.join(args.root, args.prompt_json_file)) else None
+    train_dataset = WeatherSynthetic(args.root, args.scene_list_file, prompt_json_file=prompt_json)
     dataloader = DataLoader(train_dataset, batch_size=4, shuffle=True)
     for i, batch in enumerate(dataloader):
         print(batch["im"].shape)
@@ -163,7 +169,7 @@ if __name__ == "__main__":
         fig.suptitle(f"{prompt0 if prompt0 else ''}", fontsize=10)
         plt.tight_layout()
 
-        out_path = os.path.join(os.getcwd(), "weather_synthetic_vis.png")
+        out_path = args.output if os.path.isabs(args.output) else os.path.join(os.getcwd(), args.output)
         plt.savefig(out_path, dpi=200)
         plt.close(fig)
         print(f"Saved visualization to: {out_path}")

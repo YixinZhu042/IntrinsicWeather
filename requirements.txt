@@ -23,3 +23,5 @@ matplotlib
 tqdm
 requests
 huggingface_hub
+einops
+peft

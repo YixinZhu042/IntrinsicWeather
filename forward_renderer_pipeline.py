@@ -610,8 +610,9 @@ class StableDiffusion3InstructPix2PixPipeline(DiffusionPipeline, SD3LoraLoaderMi
             image_latents = image
         else:
             image_latents = retrieve_latents(self.vae.encode(image), sample_mode="argmax")
-            # ? normalize image latents
-            # image_latents = (image_latents - self.vae.config.shift_factor) * self.vae.config.scaling_factor
+            # Training/inference convention: VAE-encoded conditioning images/maps are
+            # left unscaled. Only the generated/noisy image latent is divided by
+            # vae.config.scaling_factor before decoding at the end of the pipeline.
 
         if batch_size > image_latents.shape[0] and batch_size % image_latents.shape[0] == 0:
             # expand image_latents for batch_size

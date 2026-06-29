@@ -23,16 +23,46 @@
 
 ---
 
+## News
 
+- **2026-06-29:** Training code is now open-sourced, including WeatherSynthetic latent preparation, inverse-renderer training, and forward-renderer LoRA training.
 
 ## TODO
-[✅] Release the paper and supplementary material  
-[✅] Release WeatherSynthetic dataset  
-[ ] Release WeatherReal construction pipeline  
-[✅] Release pretrained checkpoints  
-[✅] Add Gradio for inference  
-[ ] Release training code  
 
+- [x] Release the paper and supplementary material
+- [x] Release WeatherSynthetic dataset
+- [ ] Release WeatherReal construction pipeline
+- [x] Release pretrained checkpoints
+- [x] Add Gradio for inference
+- [x] Release training code for WeatherSynthetic
+
+---
+
+## Environment
+
+Create a conda env and install dependencies:
+
+```bash
+conda create -n IntrinsicWeather python=3.12 -y
+conda activate IntrinsicWeather
+pip install -r requirements.txt
+```
+
+Install PyTorch for your CUDA/CPU from [pytorch.org](https://pytorch.org) if needed.
+
+### Base models
+
+Download **Stable Diffusion 3.5 Medium**:
+
+```bash
+hf download stabilityai/stable-diffusion-3.5-medium --local-dir sd3.5_medium
+```
+
+Download **DINOv2-base** for IMAA / DINO patch tokens:
+
+```bash
+hf download facebook/dinov2-base --local-dir dinov2_base
+```
 
 ---
 
@@ -48,12 +78,12 @@ Download:
 hf download --repo-type dataset GilgameshYX/WeatherSynthetic --local-dir WeatherSynthetic_dataset
 ```
 
-Layout (folder name matches `--local-dir` above):
+Expected layout:
 
 ```text
 WeatherSynthetic_dataset/
 ├── scene.txt              # one scene name per line
-├── prompt.json            # image_path → prompt (optional for some workflows)
+├── prompt.json            # image_path → prompt, optional for some workflows
 ├── Modern_city/
 │   ├── image/{weather}/   # {id}_image.exr, {id}_irradiance.exr
 │   └── property/          # albedo, normal, roughness, metallic
@@ -61,41 +91,104 @@ WeatherSynthetic_dataset/
 └── ...
 ```
 
-**Weather types** include `sunny`, `rainy`, `foggy`, `snowy`, `overcast`, `night`, `early_morning`, `rain_storm`, `sand_storm`, and others.
+Weather types include `sunny`, `rainy`, `foggy`, `snowy`, `overcast`, `night`, `early_morning`, `rain_storm`, `sand_storm`, and others.
 
-**Visualization helper** (load / visualize RGB and intrinsic maps):
+Visualize one sample:
 
 ```bash
-python -m data.WeatherSynthetic
+python -m data.WeatherSynthetic \
+  --root WeatherSynthetic_dataset \
+  --output weather_synthetic_vis.png
 ```
 
 ---
 
-## Environment
+## Training code
 
-Create a conda env and install dependencies:
+The training pipeline uses the released WeatherSynthetic dataset via an explicit latent-cache step.
 
-```bash
-conda create -n IntrinsicWeather python=3.12 -y
-conda activate IntrinsicWeather
-pip install -r requirements.txt
-```
-
-### Base models
-
-Download **Stable Diffusion 3.5 Medium** (base diffusion model):
+### 1. Precompute VAE/DINO latents
 
 ```bash
-hf download stabilityai/stable-diffusion-3.5-medium --local-dir sd3.5_medium
+python scripts/prepare_weather_synthetic_latents.py \
+  --dataset_root WeatherSynthetic_dataset \
+  --scene_list_file scene.txt \
+  --sd3_path sd3.5_medium \
+  --dino_path dinov2_base \
+  --output_dir latent/weatherSynthetic \
+  --resolution 512 \
+  --map_latent_scaling unscaled \
+  --image_latent_scaling scaled \
+  --encode_prompts
 ```
 
-Download **DINOv2-base** (geometry / texture features for IMAA):
+Useful options:
+
+- `--skip_dino`: skip `patch_tokens`; this is okay for forward-renderer LoRA training but **not** for inverse training.
+- `--encode_prompts`: saves SD3 text embeddings for forward training. If omitted, `training/train_forward_lora.py` computes frozen prompt embeddings online.
+- `--max_samples N`: quick debug run.
+- `--overwrite`: regenerate existing HDF5 files.
+
+### Latent scaling convention
+
+Keep the default convention unless you intentionally modify all related code:
+
+- `latent_image` is **scaled** by `vae.config.scaling_factor`.
+- intrinsic maps (`latent_albedo`, `latent_normal`, `latent_roughness`, `latent_metallic`, `latent_irradiance`) are **unscaled** by default.
+
+The training and inference code follow this convention consistently: render-image targets use SD latent scaling, while intrinsic-map latents are stored without multiplying by the VAE scaling factor. The inference pipelines also leave conditioning image/map latents unscaled and divide generated latents by `vae.config.scaling_factor` only before VAE decoding.
+
+### 2. Train inverse renderer
 
 ```bash
-hf download facebook/dinov2-base --local-dir dinov2_base
+LATENT_DIR=latent/weatherSynthetic \
+MODEL_NAME=sd3.5_medium \
+NUM_PROCESSES=1 \
+bash training/train_inverse.sh
 ```
 
-> Install PyTorch for your CUDA/CPU from [pytorch.org](https://pytorch.org) if needed.
+Main script:
+
+```bash
+accelerate launch training/train_inverse.py \
+  --pretrained_model_name_or_path sd3.5_medium \
+  --latent_data_dir latent/weatherSynthetic \
+  --output_dir checkpoints/inverse_weather_synthetic \
+  --mixed_precision bf16 \
+  --train_batch_size 4 \
+  --gradient_accumulation_steps 4 \
+  --learning_rate 1e-5 \
+  --num_train_epochs 10 \
+  --gradient_checkpointing
+```
+
+### 3. Train forward renderer LoRA
+
+```bash
+LATENT_DIR=latent/weatherSynthetic \
+MODEL_NAME=sd3.5_medium \
+NUM_PROCESSES=1 \
+bash training/train_forward_lora.sh
+```
+
+Main script:
+
+```bash
+accelerate launch training/train_forward_lora.py \
+  --pretrained_model_name_or_path sd3.5_medium \
+  --latent_data_dir latent/weatherSynthetic \
+  --output_dir checkpoints/forward_weather_synthetic_lora \
+  --mixed_precision fp16 \
+  --train_batch_size 4 \
+  --gradient_accumulation_steps 2 \
+  --learning_rate_lora 1e-4 \
+  --lora_rank 32 \
+  --conditioning_dropout_prob 0.05 \
+  --num_train_epochs 10 \
+  --gradient_checkpointing
+```
+
+See `training/README.md` for a shorter training-only checklist.
 
 ---
 
@@ -108,20 +201,16 @@ Checkpoints are on Hugging Face:
 | InverseRenderer-512 | [GilgameshYX/InverseRenderer-512](https://huggingface.co/GilgameshYX/InverseRenderer-512) |
 | InverseRenderer-1024 | [GilgameshYX/InverseRenderer-1024](https://huggingface.co/GilgameshYX/InverseRenderer-1024) |
 
-We provide a **512×512** model and a **1024×1024** variant; higher resolution generally improves quality.
-
-Download (example):
+Download:
 
 ```bash
 hf download GilgameshYX/InverseRenderer-512 --local-dir checkpoints/InverseRenderer-512
 hf download GilgameshYX/InverseRenderer-1024 --local-dir checkpoints/InverseRenderer-1024
 ```
 
-### Benchmark script (`test_inverse.py`)
+### Benchmark script
 
-Runs on WeatherSynthetic, reports PSNR / SSIM / LPIPS, and saves predictions, metrics, and GT under the output directory.
-
-> Run from the **repository root** so paths like `WeatherSynthetic_dataset/`, `sd3.5_medium/`, `checkpoints/`, and local `dino/` resolve correctly.
+Run from the repository root:
 
 ```bash
 python test_inverse.py --output_dir inverse_output
@@ -129,42 +218,58 @@ python test_inverse.py --output_dir inverse_output
 
 ### Gradio demo
 
-> Same as above: run from the **repository root**.
-
 ```bash
 python gradio_inverse_demo.py \
   --sd3_path sd3.5_medium \
   --transformer_ckpt0 checkpoints/InverseRenderer-1024/pytorch_model-00001-of-00002.bin \
   --transformer_ckpt1 checkpoints/InverseRenderer-1024/pytorch_model-00002-of-00002.bin \
   --imaa_path checkpoints/InverseRenderer-1024/imaa.pth \
-  --dino_path dino \
+  --dino_path dinov2_base \
   --device cuda \
   --port 7860
 ```
 
 ---
+
 ## Forward rendering
+
 Checkpoints are on Hugging Face:
 
 | Model | Link |
 |--------|------|
 | ForwardRenderer | [GilgameshYX/ForwardRenderer](https://huggingface.co/GilgameshYX/ForwardRenderer) |
 
-Download (example):
+Download:
+
 ```bash
 hf download GilgameshYX/ForwardRenderer --local-dir checkpoints/ForwardRenderer
 ```
 
 ### Gradio demo
+
 ```bash
 python gradio_forward_demo.py \
   --sd3_path sd3.5_medium \
-  --transformer_ckpt /checkpoints/ForwardRenderer/pytorch_model.bin \
-  --lora_path /checkpoints/ForwardRenderer/pytorch_lora_weights.safetensors \
+  --transformer_ckpt checkpoints/ForwardRenderer/pytorch_model.bin \
+  --lora_path checkpoints/ForwardRenderer/pytorch_lora_weights.safetensors \
   --maps_dir assets/examples/intrinsic_maps \
   --device cuda \
   --port 7861
 ```
+
+---
+
+## Repository layout
+
+```text
+scripts/prepare_weather_synthetic_latents.py  # EXR → VAE/DINO HDF5 cache
+training/train_inverse.py                     # inverse-renderer trainer
+training/train_forward_lora.py                # forward-renderer LoRA trainer
+data/WeatherSynthetic.py                      # released EXR dataset loader
+data/latent_datasets.py                       # HDF5 latent-cache dataset
+```
+
+Use `training/` for the WeatherSynthetic training workflow.
 
 ---
 
