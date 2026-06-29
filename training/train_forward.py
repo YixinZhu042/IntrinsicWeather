@@ -30,9 +30,7 @@ from einops import repeat
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, random_split
 import torch.utils.checkpoint
-import torch.nn.functional as F
 import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
@@ -49,13 +47,11 @@ from transformers import CLIPTextModelWithProjection, CLIPTokenizer, PretrainedC
 
 import diffusers
 from diffusers import (
-    # SD3Transformer2DModel,
     AutoencoderKL,
     FlowMatchEulerDiscreteScheduler,
+    SD3Transformer2DModel,
     StableDiffusion3Pipeline,
 )
-from custom_model.transformer import SD3Transformer2DModel
-from custom_model.atten_processor import MapAwareAttnProcessor2_0
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import compute_density_for_timestep_sampling, compute_loss_weighting_for_sd3, free_memory
 from diffusers.utils import (
@@ -64,21 +60,11 @@ from diffusers.utils import (
 )
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.torch_utils import is_compiled_module
+from diffusers.loaders import LoraLoaderMixin
+from safetensors.torch import save_file
 from diffusers.utils.import_utils import is_xformers_available
 from data.latent_datasets import LatentDataset, split_dataset
-# from transformers import ViTImageProcessor, ViTForImageClassification
 from safetensors import safe_open
-from torch.utils.data.distributed import DistributedSampler
-from MAA import MAA, build_attn_mask
-import sys
-import os
-
-# 添加当前目录到Python路径
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
-
-# Optional internal optimizer-recovery utilities are intentionally omitted from the public release.
 
 if is_wandb_available():
     import wandb
@@ -88,13 +74,7 @@ if is_wandb_available():
 
 logger = get_logger(__name__)
 
-AOV_PROMPTS = {
-    "albedo": "Albedo (diffuse basecolor)",
-    "normal": "Camera-space Normal",
-    "roughness": "Roughness",
-    "metallic": "Metallicness",
-    "irradiance": "Irradiance (lighting)",
-}
+DEFAULT_FORWARD_PROMPT = "A realistic driving scene under the specified weather condition."
 
 
 
@@ -167,7 +147,7 @@ Please adhere to the licensing terms as described `[here]({license_url})`.
         "text-to-image",
         "diffusers-training",
         "diffusers",
-        "template:sd-lora",
+        "template:sd-full-finetune",
     ]
     tags += variant_tags
 
@@ -265,33 +245,6 @@ def import_model_class_from_model_name_or_path(
     else:
         raise ValueError(f"{model_class} is not supported.")
 
-class MapAwareDiT(nn.Module):
-    def __init__(self, maa, transformer):
-        super().__init__()
-        self.maa = maa
-        self.transformer = transformer
-    
-    @property
-    def device(self):
-        """Get the device of the transformer (which should be the same as maa after accelerator.prepare)"""
-        return next(self.transformer.parameters()).device
-
-    def forward(self, patch_tokens, map_aware_mask_size, map_ids, hidden_states, encoder_hidden_states, timestep, pooled_projections):
-
-        map_aware_mask = self.maa(patch_tokens=patch_tokens, output_size=map_aware_mask_size, map_ids=map_ids)
-        # print("map_aware_mask.shape:", map_aware_mask.shape)
-
-        attn_mask = build_attn_mask(map_aware_mask, encoder_hidden_states.shape[1], hidden_states.shape[-2] * hidden_states.shape[-1], 0.7)
-
-        trans_out = self.transformer(
-            hidden_states=hidden_states,
-            timestep=timestep,
-            encoder_hidden_states=encoder_hidden_states,
-            pooled_projections=pooled_projections,
-            map_aware_mask=attn_mask,
-            return_dict=False,
-        )[0]
-        return map_aware_mask, trans_out
 
 def parse_args(input_args=None):
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
@@ -343,8 +296,7 @@ def parse_args(input_args=None):
         default=None,
         help=(
             "Directory created by scripts/prepare_weather_synthetic_latents.py. "
-            "It should contain HDF5 files with latent_image/latent_<aov> keys. "
-            "If omitted, WEATHER_SYNTHETIC_LATENT_DIR or ./latent/weatherSynthetic is used."
+            "It should contain HDF5 files with latent_image/latent_<aov> keys and optional prompt embeddings."
         ),
     )
     parser.add_argument(
@@ -358,6 +310,12 @@ def parse_args(input_args=None):
         type=float,
         default=0.95,
         help="Fraction of the open WeatherSynthetic latent dataset used for training.",
+    )
+    parser.add_argument(
+        "--default_prompt",
+        type=str,
+        default=DEFAULT_FORWARD_PROMPT,
+        help="Prompt used when the latent cache does not contain precomputed text embeddings.",
     )
 
     parser.add_argument(
@@ -388,6 +346,12 @@ def parse_args(input_args=None):
     )
 
     parser.add_argument("--repeats", type=int, default=1, help="How many times to repeat the training data.")
+    parser.add_argument(
+        "--conditioning_dropout_prob",
+        type=float,
+        default=None,
+        help="Conditioning dropout probability. Drops out the conditionings (image and edit prompt) used in training InstructPix2Pix. See section 3.2.1 in the paper: https://arxiv.org/abs/2211.09800.",
+    )
 
     parser.add_argument(
         "--class_data_dir",
@@ -417,13 +381,13 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--num_validation_images",
         type=int,
-        default=1,
+        default=4,
         help="Number of images that should be generated during validation with `validation_prompt`.",
     )
     parser.add_argument(
-        "--validation_steps",
+        "--validation_epochs",
         type=int,
-        default=200,
+        default=50,
         help=(
             "Run dreambooth validation every X epochs. Dreambooth validation consists of running the prompt"
             " `args.validation_prompt` multiple times: `args.num_validation_images`."
@@ -480,14 +444,6 @@ def parse_args(input_args=None):
         action="store_true",
         help="Whether to train the text encoder. If set, the text encoder should be float32 precision.",
     )
-    # parser.add_argument(
-    #     "--no_of_classes",
-    #     type=int,
-    #     default=77,
-    #     help=(
-    #         "number of classes which op_embedings"
-    #     ),
-    # )
     parser.add_argument(
         "--train_batch_size", type=int, default=4, help="Batch size (per device) for the training dataloader."
     )
@@ -519,7 +475,7 @@ def parse_args(input_args=None):
     )
     parser.add_argument(
         "--resume_from_checkpoint",
-        type=str,
+        action="store_true",
         help=(
             "Whether training should be resumed from a previous checkpoint. Use a path saved by"
             ' `--checkpointing_steps`, or `"latest"` to automatically select the last available checkpoint.'
@@ -719,13 +675,7 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
-    
-    parser.add_argument(
-        "--v1_checkpoint_path",
-        type=str,
-        default=None,
-        help="Path to v1 checkpoint for loading model weights and optimizer state. Used when resuming from v1 model.",
-    )
+
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -884,38 +834,7 @@ def encode_prompt(
 
     return prompt_embeds, pooled_prompt_embeds
 
-# def save_sharded_checkpoint(accelerator: Accelerator, model, save_dir: str, tag: str = None):
-#     """
-#     安全分片保存 ZeRO-2 模型。
-#     每张 GPU 保存自己 shard，避免 ALLREDUCE timeout。
-    
-#     Args:
-#         accelerator: accelerate 加速器对象
-#         model: 已经通过 accelerator.prepare 的模型
-#         save_dir: checkpoint 根目录
-#         tag: 可选，checkpoint 标记，如 step100
-#     """
-#     save_dir = Path(save_dir)
-#     save_dir.mkdir(parents=True, exist_ok=True)
 
-#     # 当前 rank 文件名
-#     local_rank = accelerator.local_process_index
-#     file_name = f"model_rank{local_rank}.pt"
-#     if tag:
-#         file_name = f"{tag}_{file_name}"
-#     shard_file = save_dir / file_name
-
-#     # unwrap ZeRO 模型，获取原始模型
-#     unwrapped_model = accelerator.unwrap_model(model)
-
-#     # 获取本 rank 权重
-#     state_dict = unwrapped_model.state_dict()
-
-#     # 保存 shard，safe_serialization=True 可以避免 pickle 跨平台问题
-#     torch.save(state_dict, shard_file, _use_new_zipfile_serialization=True)
-    
-#     if accelerator.is_main_process:
-#         print(f"[INFO] Saved shard for rank {local_rank} -> {shard_file}")
 
 def main(args):
     if args.train_text_encoder:
@@ -944,23 +863,6 @@ def main(args):
         project_config=accelerator_project_config,
         kwargs_handlers=[kwargs],
     )
-
-    # # ==========================================================
-    # # 在这里添加检查代码
-    # # ==========================================================
-    # from accelerate.utils import DistributedType
-
-    # logger.info("================== ACCELERATOR STATE CHECK ==================")
-    # logger.info(f"Distributed type: {accelerator.state.distributed_type}")
-    # logger.info(f"Number of processes: {accelerator.state.num_processes}")
-    
-    # if accelerator.state.distributed_type == DistributedType.DEEPSPEED:
-    #     logger.info("DeepSpeed is enabled!")
-    #     # 您甚至可以打印出 Accelerate 解析后的 DeepSpeed 配置
-    #     logger.info(f"DeepSpeed plugin config: {accelerator.state.deepspeed_plugin.deepspeed_config}")
-    # else:
-    #     logger.info("DeepSpeed is NOT enabled.")
-    # logger.info("===========================================================")
 
     # Disable AMP for MPS.
     if torch.backends.mps.is_available():
@@ -1087,23 +989,7 @@ def main(args):
     )
     vae = AutoencoderKL.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="vae", local_files_only=not args.allow_hub_downloads
-    ).to(accelerator.device)
-
-    # load weather_class_embedder with timestep_embedder
-    # 'time_text_embed.timestep_embedder.linear_1.bias', 
-    # 'time_text_embed.timestep_embedder.linear_1.weight', 
-    # 'time_text_embed.timestep_embedder.linear_2.bias', 
-    # 'time_text_embed.timestep_embedder.linear_2.weight',
-    # Example (local debugging): inspect keys in diffusion_pytorch_model.safetensors with safe_open
-    # file_path = "<your_path>/diffusion_pytorch_model.safetensors"
-    # with safe_open(file_path, framework="pt", device="cpu") as f:
-    #     # 获取所有键
-    #     keys = f.keys()
-    #     print("Keys in safetensors file:", keys)
-
-    #     # 读取特定键的值
-    #     weight = f.get_tensor("time_text_embed.timestep_embedder.linear_1.bias")
-    #     print("Weight shape:", weight.shape)
+    )
 
     transformer = SD3Transformer2DModel.from_pretrained(
         args.pretrained_model_name_or_path, 
@@ -1114,23 +1000,15 @@ def main(args):
         device_map=None,
         local_files_only=not args.allow_hub_downloads,
     )
-
-    transformer.set_attn_processor(MapAwareAttnProcessor2_0())
-
-    transformer.requires_grad_(True)
+   
+    transformer.requires_grad_(False)
     vae.requires_grad_(False)
+    text_encoder_one.requires_grad_(False)
+    text_encoder_two.requires_grad_(False)
+    text_encoder_three.requires_grad_(False)
 
-    if args.train_text_encoder:
-        text_encoder_one.requires_grad_(True)
-        text_encoder_two.requires_grad_(True)
-        text_encoder_three.requires_grad_(True)
-    else:
-        text_encoder_one.requires_grad_(False)
-        text_encoder_two.requires_grad_(False)
-        text_encoder_three.requires_grad_(False)
-    
     logger.info("Initializing the SD3.5 InstructPix2Pix DiT from the pretrained DiT.")
-    in_channels = 32
+    in_channels = 96 # each aovs 16 channels + noise latent
     out_channels = transformer.pos_embed.proj.out_channels
     transformer.register_to_config(in_channels=in_channels)
 
@@ -1139,18 +1017,33 @@ def main(args):
             in_channels, out_channels,transformer.pos_embed.proj.kernel_size, transformer.pos_embed.proj.stride, transformer.pos_embed.proj.padding
         )
         new_proj.weight.zero_()
-        new_proj.weight[:, :16, :, :].copy_(transformer.pos_embed.proj.weight)
+        new_proj.weight[:,:16,:,:].copy_(transformer.pos_embed.proj.weight)
         transformer.pos_embed.proj = new_proj
 
-    maa = MAA(dino_model=None, processor=None, num_maps=5, map_embedding_dim=256, common_dim=128)
-    # Example: maa_ckpt = torch.load(os.environ["MAA_CHECKPOINT"], map_location="cpu")
-    # print(maa_ckpt.keys())
-    # maa.load_state_dict(maa_ckpt['model_state_dict'])
-    maa.train()
-    MAAtransformer = MapAwareDiT(maa=maa, transformer=transformer)
 
-    # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora transformer) to half-precision
-    # as these weights are only used for inference, keeping weights in full precision is not required.
+
+    resume_ckpt = os.environ.get("RENDER_TRANSFORMER_RESUME")
+    if resume_ckpt:
+        if not os.path.isfile(resume_ckpt):
+            raise FileNotFoundError(
+                f"RENDER_TRANSFORMER_RESUME is set but file not found: {resume_ckpt}"
+            )
+        sd = torch.load(resume_ckpt, map_location="cpu")
+        transformer.load_state_dict(sd, strict=True)
+        logger.info(f"Loaded transformer weights from {resume_ckpt}")
+    else:
+        logger.info("RENDER_TRANSFORMER_RESUME not set; using pretrained transformer weights only.")
+
+    initial_global_step = 0
+
+
+    # Full forward renderer fine-tuning: train the expanded SD3 transformer directly.
+    transformer.requires_grad_(True)
+
+    # Text encoders are frozen in this training script.
+
+    # For mixed precision training we cast frozen VAE/text-encoder weights to half precision;
+    # the trainable transformer is kept under Accelerate mixed precision.
     weight_dtype = torch.float32
     if accelerator.mixed_precision == "fp16":
         weight_dtype = torch.float16
@@ -1163,13 +1056,14 @@ def main(args):
             "Mixed precision training with bfloat16 is not supported on MPS. Please use fp16 (recommended) or fp32 instead."
         )
 
+    vae.to(accelerator.device)
     if not args.train_text_encoder:
         text_encoder_one.to(accelerator.device, dtype=weight_dtype)
         text_encoder_two.to(accelerator.device, dtype=weight_dtype)
         text_encoder_three.to(accelerator.device, dtype=weight_dtype)
 
     if args.gradient_checkpointing:
-        MAAtransformer.transformer.enable_gradient_checkpointing()
+        transformer.enable_gradient_checkpointing()
         if args.train_text_encoder:
             text_encoder_one.gradient_checkpointing_enable()
             text_encoder_two.gradient_checkpointing_enable()
@@ -1247,34 +1141,8 @@ def main(args):
             args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size * accelerator.num_processes
         )
 
-    # Optimization parameters
-    transformer_parameters_with_lr = {"params": MAAtransformer.parameters(), "lr": args.learning_rate}
-    if args.train_text_encoder:
-        # different learning rate for text encoder and unet
-        text_parameters_one_with_lr = {
-            "params": text_encoder_one.parameters(),
-            "weight_decay": args.adam_weight_decay_text_encoder,
-            "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate,
-        }
-        text_parameters_two_with_lr = {
-            "params": text_encoder_two.parameters(),
-            "weight_decay": args.adam_weight_decay_text_encoder,
-            "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate,
-        }
-        text_parameters_three_with_lr = {
-            "params": text_encoder_three.parameters(),
-            "weight_decay": args.adam_weight_decay_text_encoder,
-            "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate,
-        }
-        params_to_optimize = [
-            transformer_parameters_with_lr,
-            text_parameters_one_with_lr,
-            text_parameters_two_with_lr,
-            text_parameters_three_with_lr,
-        ]
-    else:
-        params_to_optimize = [transformer_parameters_with_lr]
-
+    # Optimization parameters: full fine-tuning of the forward renderer transformer.
+    params_to_optimize = [{"params": transformer.parameters(), "lr": args.learning_rate}]
 
     # Optimizer creation
     if not (args.optimizer.lower() == "prodigy" or args.optimizer.lower() == "adamw"):
@@ -1347,19 +1215,19 @@ def main(args):
 
     # Dataset and DataLoaders creation.
     # The trainer consumes the WeatherSynthetic latent cache.
-    _data_root = os.environ.get("INTRINSIC_WEATHER_DATA_ROOT", ".")
+    _render_data_root = os.environ.get("RENDERER_DATA_ROOT", ".")
     latent_data_dir = args.latent_data_dir or os.environ.get(
         "WEATHER_SYNTHETIC_LATENT_DIR",
-        os.path.join(_data_root, "latent", "weatherSynthetic"),
+        os.path.join(_render_data_root, "latent", "weatherSynthetic"),
     )
     scene_list_file = args.scene_list_file or os.environ.get("WEATHER_SYNTHETIC_SCENE_LIST")
     dataset = LatentDataset(
         latent_data_dir,
         scene_list_file=scene_list_file,
-        include_patch_tokens=True,
-        include_prompt_embeds=False,
+        include_patch_tokens=False,
+        include_prompt_embeds=True,
+        require_prompt_embeds=False,
     )
-
     train_dataset, _ = split_dataset(dataset, train_ratio=args.train_split, seed=args.seed)
 
     logger.info(f"Using WeatherSynthetic latent cache: {latent_data_dir}")
@@ -1367,12 +1235,11 @@ def main(args):
         "Expected latent convention: image latents are VAE-scaled; intrinsic map latents are unscaled "
         "(see scripts/prepare_weather_synthetic_latents.py --map_latent_scaling)."
     )
-
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
+        batch_size=args.train_batch_size,
         shuffle=True,
         num_workers=args.dataloader_num_workers,
-        batch_size=args.train_batch_size,
         pin_memory=True
     )
 
@@ -1435,16 +1302,9 @@ def main(args):
             lr_scheduler,
         )
     else:
-        MAAtransformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            MAAtransformer, optimizer, train_dataloader, lr_scheduler
+        transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+            transformer, optimizer, train_dataloader, lr_scheduler
         )
-        
-        # Debug info after accelerator.prepare
-        if accelerator.is_main_process:
-            logger.info(f"MAAtransformer after prepare: {type(MAAtransformer)}")
-            logger.info(f"MAAtransformer device after prepare: {MAAtransformer.device}")
-            logger.info(f"MAA module device: {next(MAAtransformer.maa.parameters()).device}")
-            logger.info(f"Transformer module device: {next(MAAtransformer.transformer.parameters()).device}")
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1458,6 +1318,8 @@ def main(args):
     if accelerator.is_main_process:
         tracker_name = "dreambooth-sd3"
         accelerator.init_trackers(tracker_name, config=vars(args))
+
+    
 
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -1473,41 +1335,20 @@ def main(args):
     global_step = 0
     first_epoch = 0
 
-
     # Potentially load in the weights and states from a previous save
-    initial_global_step = 0
-    
-    if args.v1_checkpoint_path:
-        raise ValueError(
-            "--v1_checkpoint_path is not supported in this trainer. "
-            "Use --resume_from_checkpoint for checkpoints produced by this script."
-        )
-
+    # print(transformer)
     if args.resume_from_checkpoint:
-        # 原有的v2 checkpoint恢复逻辑
-        if args.resume_from_checkpoint != "latest":
-            path = os.path.basename(args.resume_from_checkpoint)
-        else:
-            # Get the most recent checkpoint
-            dirs = os.listdir(args.output_dir)
-            dirs = [d for d in dirs if d.startswith("checkpoint")]
-            dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
-            path = dirs[-1] if len(dirs) > 0 else None
+        # Get the mos recent checkpoint
+        dirs = os.listdir(args.output_dir)
+        dirs = [d for d in dirs if d.startswith("checkpoint")]
+        dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
+        path = dirs[-1] if len(dirs) > 0 else None
+        accelerator.print(f"Resuming from checkpoint {path}")
+        accelerator.load_state(os.path.join(args.output_dir, path))
+        global_step = int(path.split("-")[1])
 
-        if path is None:
-            accelerator.print(
-                f"Checkpoint '{args.resume_from_checkpoint}' does not exist. Starting a new training run."
-            )
-            args.resume_from_checkpoint = None
-            initial_global_step = 0
-        else:
-            accelerator.print(f"Resuming from checkpoint {path}")
-            accelerator.load_state(os.path.join(args.output_dir, path))
-            global_step = int(path.split("-")[1])
-            initial_global_step = global_step
-            first_epoch = global_step // num_update_steps_per_epoch
-            resume_global_step = global_step * args.gradient_accumulation_steps
-            resume_step = resume_global_step % (num_update_steps_per_epoch * args.gradient_accumulation_steps)
+        initial_global_step = global_step
+        first_epoch = global_step // num_update_steps_per_epoch
 
     progress_bar = tqdm(
         range(0, args.max_train_steps),
@@ -1527,28 +1368,46 @@ def main(args):
         while len(sigma.shape) < n_dim:
             sigma = sigma.unsqueeze(-1)
         return sigma
+        
+    # def tokenize_captions(captions, tokenizer, max_length=None):
+    #     inputs = tokenizer(
+    #         captions,
+    #         max_length=max_length,
+    #         padding="max_length",
+    #         truncation=True,
+    #         return_tensors="pt",
+    #     )
+    #     return inputs.input_ids
 
-    required_aovs = ["albedo", "normal", "roughness", "metallic", "irradiance"]
-    prompts_list = AOV_PROMPTS
-    # pre-calculate prompt embeds to save memory
-    prompt_embeds_list = []
-    pooled_prompt_embeds_list = []
-    for prompts in prompts_list.values():
-        prompt_embeds, pooled_prompt_embeds = compute_text_embeddings(
-                            [prompts]*args.train_batch_size, text_encoders, tokenizers
-                        )
-        # print(prompt_embeds.shape, pooled_prompt_embeds.shape)
-        prompt_embeds_list.append(prompt_embeds)
-        pooled_prompt_embeds_list.append(pooled_prompt_embeds)
+    # Get null conditioning
+    # def compute_null_conditioning():
+    #     null_conditioning_list = []
+    #     max_length = min(tokenizer.model_max_length for tokenizer in tokenizers)  # Ensure consistent max_length
+    #     for a_tokenizer, a_text_encoder in zip(tokenizers, text_encoders):
+    #         null_conditioning_list.append(
+    #             a_text_encoder(
+    #                 tokenize_captions([""], tokenizer=a_tokenizer, max_length=max_length).to(accelerator.device),
+    #                 output_hidden_states=True,
+    #             ).hidden_states[-2]
+    #         )
+    #     return torch.concat(null_conditioning_list, dim=-1)
+    def compute_null_conditioning():
+        with torch.no_grad():
+            null_prompt = [""]  # batch size = 1
+            null_embeds, pooled_null_embeds = encode_prompt(
+                text_encoders, tokenizers, null_prompt, args.max_sequence_length
+            )
+            null_embeds = null_embeds.to(accelerator.device)
+            pooled_null_embeds = pooled_null_embeds.to(accelerator.device)
+        return null_embeds, pooled_null_embeds
 
-    
-    del tokenizer_one, tokenizer_two, tokenizer_three, text_encoder_one, text_encoder_two, text_encoder_three
-    del tokenizers, text_encoders
-    free_memory()
-    torch.cuda.empty_cache()
+    null_conditioning, _ = compute_null_conditioning()
+
+    # Keep tokenizers/text encoders available as a fallback when the cache was generated
+    # without --encode_prompts. They are frozen and used under torch.no_grad().
 
     for epoch in range(first_epoch, args.num_train_epochs):
-        MAAtransformer.train()
+        transformer.train()
         if args.train_text_encoder:
             text_encoder_one.train()
             text_encoder_two.train()
@@ -1556,203 +1415,257 @@ def main(args):
 
         for step, batch in enumerate(train_dataloader):
           
-            models_to_accumulate = MAAtransformer
+            models_to_accumulate = transformer
             if args.train_text_encoder:
                 models_to_accumulate.extend([text_encoder_one, text_encoder_two, text_encoder_three])
             with accelerator.accumulate(models_to_accumulate):
-                original_image_embeds = batch["latent_image"].to(MAAtransformer.device)
+
+                # render_image需要vae放缩， map不需要，这些处理都在dataset和预处理完成
+                render_latents = batch["latent_image"].to(accelerator.device)
+                
+                # render_image = batch["im"].to(transformer.device, dtype=torch.float32)
                 # with torch.no_grad():
-                #     original_image_embeds = vae.encode(batch["im"].to(transformer.device)).latent_dist.sample()
-                # image = batch["im"].to(transformer.device)
-
-                for i, cur_aov_name in enumerate(required_aovs):
-                    # with torch.no_grad():
-                    #     latents = vae.encode(batch[cur_aov_name].to(transformer.device)).latent_dist.sample() * vae.config.scaling_factor
-
-                    latents = batch["latent_" + cur_aov_name].to(accelerator.device, dtype=weight_dtype)
-                    valid_mask = torch.ones((latents.shape[0]), dtype=int)
-                    if cur_aov_name == "roughness":
-                        valid_mask = batch["roughness_flag"]  # extract the index for those valid
-                    if cur_aov_name == "metallic":
-                        valid_mask = batch["metallic_flag"]
-                    if cur_aov_name == "irradiance":
-                        valid_mask = batch["irradiance_flag"]
-                    
-                    if not isinstance(valid_mask, torch.Tensor):
-                        valid_mask = torch.tensor(valid_mask, device=latents.device).to(torch.bool)
-                    else:
-                        valid_mask = valid_mask.to(device=latents.device, dtype=torch.bool)
-                    # print(cur_aov_name, "valid_mask: ", valid_mask.shape, valid_mask)
+                #     render_latents = vae.encode(render_image).latent_dist.sample() * vae.config.scaling_factor
 
 
-                    # Sample noise that we'll add to the latents
-                    
-                    # print(mask.shape)
-                    noise = torch.randn_like(latents) 
-                    bsz = latents.shape[0]
+                # get weather_class
+                # totally split 6 classes :
+                # indoor rainy snowy foggy sunny else 
+                # weather_class = batch["weather_class"]
+
+                # text prompts
+                # prompts = batch["prompt"]
+                # # print("prompts:", prompts)
+                # with torch.no_grad():
+                #     encoder_hidden_states, pooled_projection = compute_text_embeddings(
+                #             prompts, text_encoders, tokenizers
+                #         )
+                if "encoder_hidden_states" in batch and "pooled_projection" in batch:
+                    encoder_hidden_states = batch["encoder_hidden_states"].to(accelerator.device, dtype=weight_dtype)
+                    pooled_projection = batch["pooled_projection"].to(accelerator.device, dtype=weight_dtype)
+                else:
+                    prompts = batch.get("prompt", None)
+                    if prompts is None or (isinstance(prompts, (list, tuple)) and all(p == "" for p in prompts)):
+                        prompts = [args.default_prompt] * render_latents.shape[0]
+                    with torch.no_grad():
+                        encoder_hidden_states, pooled_projection = compute_text_embeddings(
+                            prompts, text_encoders, tokenizers
+                        )
+                    encoder_hidden_states = encoder_hidden_states.to(accelerator.device, dtype=weight_dtype)
+                    pooled_projection = pooled_projection.to(accelerator.device, dtype=weight_dtype)
+                # print("prompt_embeds:", prompt_embeds.shape, "pooled_projection:", pooled_projection.shape)
+                
+
+                # we have pre-calculated latent aovs, and get them from dataset
+                # with torch.no_grad():
+                #     albedo = vae.encode(batch["albedo"].to(transformer.device, torch.float32)).latent_dist.sample() 
+                #     normal = vae.encode(batch["normal"].to(transformer.device, torch.float32)).latent_dist.sample()
+                #     roughness = vae.encode(batch["roughness"].to(transformer.device, torch.float32)).latent_dist.sample()
+                #     metallic = vae.encode(batch["metallic"].to(transformer.device, torch.float32)).latent_dist.sample()
+                #     irradiance = vae.encode(batch["irradiance"].to(transformer.device, torch.float32)).latent_dist.sample()
+                albedo = batch["latent_albedo"] 
+                normal = batch["latent_normal"]
+                roughness = batch["latent_roughness"]
+                metallic = batch["latent_metallic"]
+                irradiance = batch["latent_irradiance"]
+                # 设置丢弃概率
+                p = 0.3  # 其他 maps 的丢弃概率
+                q = 0.5  # irradiance 的丢弃概率，q > p
+
+                # 生成一个随机张量，用于丢弃每个 map
+                bsz = albedo.shape[0]  # batch size
+
+                # 其他 maps 的丢弃掩码，使用 p 作为概率
+                dropout_mask_albedo = (torch.rand(bsz, 1, 1, 1, device=albedo.device) > p).float()
+                dropout_mask_normal = (torch.rand(bsz, 1, 1, 1, device=albedo.device) > p).float()
+                dropout_mask_roughness = (torch.rand(bsz, 1, 1, 1, device=albedo.device) > p).float()
+                dropout_mask_metallic = (torch.rand(bsz, 1, 1, 1, device=albedo.device) > p).float()
+                dropout_mask_irradiance = (torch.rand(bsz, 1, 1, 1, device=albedo.device) > q).float()
+                dropout_mask_normal = torch.max(dropout_mask_normal, dropout_mask_albedo)
 
 
-                    # Sample a random timestep for each image
-                    # for weighting schemes where we sample timesteps non-uniformly
-                    # same timesteps foe different maps of the same image
-                    u = compute_density_for_timestep_sampling(
-                        weighting_scheme=args.weighting_scheme,
-                        batch_size=bsz,
-                        logit_mean=args.logit_mean,
-                        logit_std=args.logit_std,
-                        mode_scale=args.mode_scale,
+                # 将丢弃的部分填充为零
+                # print("dropout_mask_albedo:", dropout_mask_albedo.shape, dropout_mask_albedo.squeeze())
+                # print("albedo:", albedo.shape)
+                # print("dropout_mask_normal:", dropout_mask_normal.shape)
+                # print("normal:", normal.shape)
+                # print("dropout_mask_roughness:", dropout_mask_roughness.shape)
+                # print("roughness:", roughness.shape)
+                albedo = albedo * dropout_mask_albedo
+                normal = normal * dropout_mask_normal
+                roughness = roughness * dropout_mask_roughness
+                metallic = metallic * dropout_mask_metallic
+                irradiance = irradiance * dropout_mask_irradiance
+
+                # 合并所有 latent maps
+                aov_latents = torch.cat([albedo, normal, roughness, metallic, irradiance], dim=1).to(accelerator.device, dtype=weight_dtype)
+
+            
+                # Sample noise that we'll add to the latents
+                noise = torch.randn_like(render_latents)
+                bsz = render_latents.shape[0]
+
+                # Sample a random timestep for each image
+                # for weighting schemes where we sample timesteps non-uniformly
+                u = compute_density_for_timestep_sampling(
+                    weighting_scheme=args.weighting_scheme,
+                    batch_size=bsz,
+                    logit_mean=args.logit_mean,
+                    logit_std=args.logit_std,
+                    mode_scale=args.mode_scale,
+                )
+                indices = (u * noise_scheduler_copy.config.num_train_timesteps).long()
+                timesteps = noise_scheduler_copy.timesteps[indices].to(device=render_latents.device)
+
+                # Add noise according to flow matching.
+                # zt = (1 - texp) * x + texp * z1
+                sigmas = get_sigmas(timesteps, n_dim=render_latents.ndim, dtype=render_latents.dtype)
+                noisy_latents = (1.0 - sigmas) * render_latents + sigmas * noise
+
+
+                original_image_embeds = aov_latents
+                if args.conditioning_dropout_prob is not None:
+                    random_p = torch.rand(bsz, device=aov_latents.device)
+                    # Sample masks for the edit prompts.
+                    prompt_mask = random_p < 2 * args.conditioning_dropout_prob
+                    prompt_mask = prompt_mask.reshape(bsz, 1, 1)
+                    # Final text conditioning.
+                    # print("prompt_mask:", prompt_mask.shape)
+                    # print("null_conditioning:", null_conditioning.shape)
+                    # print("encoder_hidden_states:", encoder_hidden_states.shape)
+                    encoder_hidden_states = torch.where(prompt_mask, null_conditioning, encoder_hidden_states)
+
+                    # Sample masks for the original images.
+                    image_mask_dtype = aov_latents.dtype
+                    image_mask = 1 - (
+                        (random_p >= args.conditioning_dropout_prob).to(image_mask_dtype)
+                        * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
                     )
-                    indices = (u * noise_scheduler_copy.config.num_train_timesteps).long()
-                    timesteps = noise_scheduler_copy.timesteps[indices].to(device=latents.device)
-                    # print("timesteps:", timesteps.shape, timesteps.dtype)  # torch.Size([12])
-
-                    # Add noise according to flow matching.
-                    # zt = (1 - texp) * x + texp * z1
-                    sigmas = get_sigmas(timesteps, n_dim=latents.ndim, dtype=latents.dtype)
-                    noisy_latents = (1.0 - sigmas) * latents + sigmas * noise
+                    image_mask = image_mask.reshape(bsz, 1, 1, 1)
+                    # Final image conditioning.
+                    original_image_embeds = image_mask * aov_latents
+                    # print(original_image_embeds.shape)
+                concatenated_noisy_latents = torch.concat([noisy_latents, original_image_embeds], dim=1)
 
 
-                    # concatenated_noisy_latents = torch.cat([noisy_latents, original_image_embeds], dim=2).to(dtype=weight_dtype)
-                    # print("concatenated_noisy_latents:", concatenated_noisy_latents.shape, concatenated_noisy_latents.dtype)  # torch.Size([12, 5, 16, 64, 64])
-                    # pooled_projections = pooled_prompt_embeds_list[i].repeat(bsz,1)
-                    # print("encoder_hidden_states:", prompt_embeds_list[i].shape)
-                    # print("pooled_projections:",pooled_prompt_embeds_list[i].shape)
-                    # print("concatenated_noisy_latents:", concatenated_noisy_latents.shape)
+                
+                # print("prompt:", encoder_hidden_states.shape)
+                # print("pooled:", pooled_projection.shape)
+
+                # Predict the noise residual
+                if not args.train_text_encoder: 
                     # print("timesteps:", timesteps.shape)
-
-                    
-                    # 连接输入
-                    concatenated_noisy_latents = torch.cat([noisy_latents, original_image_embeds], dim=1).to(dtype=weight_dtype)
-                    patch_tokens = batch["patch_tokens"].to(accelerator.device, dtype=weight_dtype)
-
-                    # Predict the noise residual
-                    if not args.train_text_encoder: 
-                        map_aware_mask_size = ((concatenated_noisy_latents.shape[-1] // MAAtransformer.transformer.config.patch_size), (concatenated_noisy_latents.shape[-2] // MAAtransformer.transformer.config.patch_size))
-                        # print("map_aware_mask_size:", map_aware_mask_size)
-
-                        map_aware_mask, model_pred = MAAtransformer(
-                        patch_tokens=patch_tokens,
-                        map_aware_mask_size=map_aware_mask_size,
-                        map_ids=torch.tensor([i]*bsz).to(accelerator.device),
+                    # print("weather_class:", weather_class.shape)
+                    # print(concatenated_noisy_latents.shape)
+                    model_pred = transformer(
                         hidden_states=concatenated_noisy_latents,
                         timestep=timesteps,
-                        encoder_hidden_states=prompt_embeds_list[i],
-                        pooled_projections=pooled_prompt_embeds_list[i],
-                        )
+                        encoder_hidden_states=encoder_hidden_states,
+                        pooled_projections=pooled_projection,
+                    )[0]
+                else:
+                    prompt_embeds, pooled_prompt_embeds = encode_prompt(
+                        text_encoders=[text_encoder_one, text_encoder_two, text_encoder_three],
+                        tokenizers=None,
+                        prompt=None,
+                        text_input_ids_list=[tokens_one, tokens_two, tokens_three],
+                    )
+                    model_pred = transformer(
+                        hidden_states=noisy_model_input,
+                        timestep=timesteps,
+                        encoder_hidden_states=prompt_embeds,
+                        pooled_projections=pooled_prompt_embeds,
+                        return_dict=False,
+                    )[0]
 
-                    else:
-                        prompt_embeds, pooled_prompt_embeds = encode_prompt(
-                            text_encoders=[text_encoder_one, text_encoder_two, text_encoder_three],
-                            tokenizers=None,
-                            prompt=None,
-                            text_input_ids_list=[tokens_one, tokens_two, tokens_three],
-                        )
-                        model_pred = transformer(
-                            hidden_states=noisy_model_input,
-                            timestep=timesteps,
-                            encoder_hidden_states=prompt_embeds,
-                            pooled_projections=pooled_prompt_embeds,
-                            return_dict=False,
-                        )[0]
-                    # print("model_pred_1: ", model_pred.shape)  # torch.Size([60, 16, 64, 64])
+                # Follow: Section 5 of https://arxiv.org/abs/2206.00364.
+                # Preconditioning of the model outputs.
+                if args.precondition_outputs:
+                    model_pred = model_pred * (-sigmas) + noisy_latents
 
-                    # Follow: Section 5 of https://arxiv.org/abs/2206.00364.
-                    # Preconditioning of the model outputs.
-                    # print("sigmas:", sigmas.shape, sigmas.dtype)  
+                # these weighting schemes use a uniform timestep sampling
+                # and instead post-weight the loss
+                weighting = compute_loss_weighting_for_sd3(weighting_scheme=args.weighting_scheme, sigmas=sigmas)
 
-                    if args.precondition_outputs:
-                        model_pred = model_pred * (-sigmas) + noisy_latents
+                # flow matching loss
+                if args.precondition_outputs:
+                    target = render_latents
+                else:
+                    target = noise - render_latents
 
-                    
-                    # these weighting schemes use a uniform timestep sampling
-                    # and instead post-weight the loss
-                    weighting = compute_loss_weighting_for_sd3(weighting_scheme=args.weighting_scheme, sigmas=sigmas)
+                if args.with_prior_preservation:
+                    # Chunk the noise and model_pred into two parts and compute the loss on each part separately.
+                    model_pred, model_pred_prior = torch.chunk(model_pred, 2, dim=0)
+                    target, target_prior = torch.chunk(target, 2, dim=0)
 
-    
-                    target = latents
-                    
-
-                    if args.with_prior_preservation:
-                        # Chunk the noise and model_pred into two parts and compute the loss on each part separately.
-                        model_pred, model_pred_prior = torch.chunk(model_pred, 2, dim=0)
-                        target, target_prior = torch.chunk(target, 2, dim=0)
-
-                        # Compute prior loss
-                        prior_loss = torch.mean(
-                            (weighting.float() * (model_pred_prior.float() - target_prior.float()) ** 2).reshape(
-                                target_prior.shape[0], -1
-                            ),
-                            1,
-                        )
-                        prior_loss = prior_loss.mean()
-
-                    # Compute regular loss.
-                    loss = torch.mean(
-                        (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
+                    # Compute prior loss
+                    prior_loss = torch.mean(
+                        (weighting.float() * (model_pred_prior.float() - target_prior.float()) ** 2).reshape(
+                            target_prior.shape[0], -1
+                        ),
                         1,
                     )
-                    # print("loss:", loss.shape, loss.dtype)  
-        
-                    valid_loss = loss[valid_mask]
-                    if valid_loss.shape[0] == 0:
-                        valid_loss = loss[0]
-                    # print("valid_loss:", valid_loss.shape, valid_loss.dtype)  # torch.Size([B])
-                    loss = valid_loss.mean()
+                    prior_loss = prior_loss.mean()
 
-                    if args.with_prior_preservation:
-                        # Add the prior loss to the instance loss.
-                        loss = loss + args.prior_loss_weight * prior_loss
+                # Compute regular loss.
+                loss = torch.mean(
+                    (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
+                    1,
+                )
+                loss = loss.mean()
 
-                    accelerator.backward(loss)
-                    if accelerator.sync_gradients:
-                        params_to_clip = (
-                            itertools.chain(
-                                MAAtransformer.parameters(),
-                                text_encoder_one.parameters(),
-                                text_encoder_two.parameters(),
-                                text_encoder_three.parameters(),
-                            )
-                            if args.train_text_encoder
-                            else MAAtransformer.parameters()
+                if args.with_prior_preservation:
+                    # Add the prior loss to the instance loss.
+                    loss = loss + args.prior_loss_weight * prior_loss
+
+                accelerator.backward(loss)
+                if accelerator.sync_gradients:
+                    params_to_clip = (
+                        itertools.chain(
+                            transformer.parameters(),
+                            text_encoder_one.parameters(),
+                            text_encoder_two.parameters(),
+                            text_encoder_three.parameters(),
                         )
-                        accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                        if args.train_text_encoder
+                        else transformer.parameters()
+                    )
+                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
-                    optimizer.step()
-                    optimizer.zero_grad()
+                optimizer.step()
+                optimizer.zero_grad()
                 lr_scheduler.step()
-                
                 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
                 progress_bar.update(1)
                 global_step += 1
 
-                # if accelerator.is_main_process:
-                if global_step % args.checkpointing_steps == 0:
-                    # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
-                    if args.checkpoints_total_limit is not None:
-                        checkpoints = os.listdir(args.output_dir)
-                        checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
-                        checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+                if accelerator.is_main_process:
+                    if global_step % args.checkpointing_steps == 0:
+                        # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
+                        if args.checkpoints_total_limit is not None:
+                            checkpoints = os.listdir(args.output_dir)
+                            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
+                            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
 
-                        # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
-                        if len(checkpoints) >= args.checkpoints_total_limit:
-                            num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
-                            removing_checkpoints = checkpoints[0:num_to_remove]
+                            # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
+                            if len(checkpoints) >= args.checkpoints_total_limit:
+                                num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
+                                removing_checkpoints = checkpoints[0:num_to_remove]
 
-                            logger.info(
-                                f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
-                            )
-                            logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+                                logger.info(
+                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                                )
+                                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
 
-                            for removing_checkpoint in removing_checkpoints:
-                                removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
-                                shutil.rmtree(removing_checkpoint)
+                                for removing_checkpoint in removing_checkpoints:
+                                    removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
+                                    shutil.rmtree(removing_checkpoint)
 
-                    save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                    accelerator.save_state(save_path,  safe_serialization=False)
-                    # save_sharded_checkpoint(accelerator, transformer, save_dir=args.output_dir, tag=f"checkpoint-{global_step}")
-                    logger.info(f"Saved state to {save_path}")
+                        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                        accelerator.save_state(save_path,  safe_serialization=False)
+                        logger.info(f"Saved state to {save_path}")
 
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -1762,7 +1675,7 @@ def main(args):
                 break
 
         if accelerator.is_main_process:
-            if args.validation_prompt is not None and epoch % args.validation_steps == 0:
+            if args.validation_prompt is not None and epoch % args.validation_epochs == 0:
                 # create pipeline
                 if not args.train_text_encoder:
                     text_encoder_one, text_encoder_two, text_encoder_three = load_text_encoders(
@@ -1771,7 +1684,7 @@ def main(args):
                     text_encoder_one.to(weight_dtype)
                     text_encoder_two.to(weight_dtype)
                     text_encoder_three.to(weight_dtype)
-                pipeline = StableDiffusion3InstructPix2PixPipeline.from_pretrained(
+                pipeline = StableDiffusion3Pipeline.from_pretrained(
                     args.pretrained_model_name_or_path,
                     vae=vae,
                     text_encoder=accelerator.unwrap_model(text_encoder_one),
@@ -1781,12 +1694,14 @@ def main(args):
                     revision=args.revision,
                     variant=args.variant,
                     torch_dtype=weight_dtype,
+                    local_files_only=not args.allow_hub_downloads,
                 )
-                # pipeline_args = {"prompt": args.validation_prompt}
+                pipeline_args = {"prompt": args.validation_prompt}
                 images = log_validation(
                     pipeline=pipeline,
                     args=args,
                     accelerator=accelerator,
+                    pipeline_args=pipeline_args,
                     epoch=epoch,
                     torch_dtype=weight_dtype,
                 )
@@ -1794,46 +1709,17 @@ def main(args):
                     del text_encoder_one, text_encoder_two, text_encoder_three
                     free_memory()
 
-    # Save the lora layers
+    # Save the trained full forward-renderer transformer.
     accelerator.wait_for_everyone()
-    
-    # Add debug info before saving
-    if accelerator.is_main_process:
-        logger.info("Starting final checkpoint save...")
-        logger.info(f"MAAtransformer device: {MAAtransformer.device}")
-        logger.info(f"MAAtransformer type: {type(MAAtransformer)}")
-    
     save_path = os.path.join(args.output_dir, "last-checkpoint")
-    
-    try:
-        accelerator.save_state(save_path, safe_serialization=False)
-        logger.info(f"Saved state to {save_path}")
-    except Exception as e:
-        logger.error(f"Failed to save state: {e}")
-        # Try alternative saving method
-        if accelerator.is_main_process:
-            os.makedirs(save_path, exist_ok=True)
-            try:
-                # Save MAAtransformer components separately
-                unwrapped_model = unwrap_model(MAAtransformer)
-                torch.save({
-                    'maa_state_dict': unwrapped_model.maa.state_dict(),
-                    'transformer_state_dict': unwrapped_model.transformer.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'global_step': global_step,
-                    'epoch': epoch,
-                }, os.path.join(save_path, "manual_checkpoint.pth"))
-                logger.info(f"Saved manual checkpoint to {save_path}")
-            except Exception as e2:
-                logger.error(f"Manual save also failed: {e2}")
-                # Last resort: save just the state dicts
-                try:
-                    torch.save(unwrapped_model.state_dict(), os.path.join(save_path, "model_only.pth"))
-                    logger.info(f"Saved model state dict only to {save_path}")
-                except Exception as e3:
-                    logger.error(f"Final save attempt failed: {e3}")
-    
-    logger.info("End training!")
+    accelerator.save_state(save_path, safe_serialization=False)
+    if accelerator.is_main_process:
+        transformer = unwrap_model(transformer)
+        os.makedirs(save_path, exist_ok=True)
+        torch.save(transformer.state_dict(), os.path.join(save_path, "pytorch_model.bin"))
+        logger.info(f"Saved full forward renderer checkpoint to {save_path}")
+        logger.info("End training!")
+
 
     accelerator.end_training()
 

@@ -1304,9 +1304,8 @@ def main(args):
             safeguard_warmup=args.prodigy_safeguard_warmup,
         )
 
-    # Dataset and DataLoaders creation (open-source release).
-    # The original internal script mixed private WeatherReal/Waymo variants.
-    # This public trainer consumes the released WeatherSynthetic latent cache only.
+    # Dataset and DataLoaders creation.
+    # The trainer consumes the WeatherSynthetic latent cache.
     _render_data_root = os.environ.get("RENDERER_DATA_ROOT", ".")
     latent_data_dir = args.latent_data_dir or os.environ.get(
         "WEATHER_SYNTHETIC_LATENT_DIR",

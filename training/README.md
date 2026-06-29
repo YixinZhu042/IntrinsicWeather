@@ -16,7 +16,7 @@ python scripts/prepare_weather_synthetic_latents.py \
   --encode_prompts
 ```
 
-`--encode_prompts` is optional for `train_forward_lora.py`; if omitted, the trainer computes frozen text embeddings online.
+`--encode_prompts` is optional for `train_forward.py` and `train_forward_lora.py`; if omitted, the trainer computes frozen text embeddings online.
 
 ## 2. Train inverse renderer
 
@@ -24,7 +24,13 @@ python scripts/prepare_weather_synthetic_latents.py \
 LATENT_DIR=latent/weatherSynthetic MODEL_NAME=sd3.5_medium bash training/train_inverse.sh
 ```
 
-## 3. Train forward renderer LoRA
+## 3. Train forward renderer
+
+```bash
+LATENT_DIR=latent/weatherSynthetic MODEL_NAME=sd3.5_medium bash training/train_forward.sh
+```
+
+## 4. Train forward renderer LoRA
 
 ```bash
 LATENT_DIR=latent/weatherSynthetic MODEL_NAME=sd3.5_medium bash training/train_forward_lora.sh

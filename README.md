@@ -125,7 +125,7 @@ python scripts/prepare_weather_synthetic_latents.py \
 Useful options:
 
 - `--skip_dino`: skip `patch_tokens`; this is okay for forward-renderer LoRA training but **not** for inverse training.
-- `--encode_prompts`: saves SD3 text embeddings for forward training. If omitted, `training/train_forward_lora.py` computes frozen prompt embeddings online.
+- `--encode_prompts`: saves SD3 text embeddings for forward training. If omitted, `training/train_forward.py` / `training/train_forward_lora.py` compute frozen prompt embeddings online.
 - `--max_samples N`: quick debug run.
 - `--overwrite`: regenerate existing HDF5 files.
 
@@ -162,7 +162,32 @@ accelerate launch training/train_inverse.py \
   --gradient_checkpointing
 ```
 
-### 3. Train forward renderer LoRA
+### 3. Train forward renderer
+
+```bash
+LATENT_DIR=latent/weatherSynthetic \
+MODEL_NAME=sd3.5_medium \
+NUM_PROCESSES=1 \
+bash training/train_forward.sh
+```
+
+Main script:
+
+```bash
+accelerate launch training/train_forward.py \
+  --pretrained_model_name_or_path sd3.5_medium \
+  --latent_data_dir latent/weatherSynthetic \
+  --output_dir checkpoints/forward_weather_synthetic \
+  --mixed_precision fp16 \
+  --train_batch_size 4 \
+  --gradient_accumulation_steps 2 \
+  --learning_rate 1e-5 \
+  --conditioning_dropout_prob 0.05 \
+  --num_train_epochs 10 \
+  --gradient_checkpointing
+```
+
+### 4. Train forward renderer LoRA
 
 ```bash
 LATENT_DIR=latent/weatherSynthetic \
@@ -264,6 +289,7 @@ python gradio_forward_demo.py \
 ```text
 scripts/prepare_weather_synthetic_latents.py  # EXR → VAE/DINO HDF5 cache
 training/train_inverse.py                     # inverse-renderer trainer
+training/train_forward.py                     # forward-renderer trainer
 training/train_forward_lora.py                # forward-renderer LoRA trainer
 data/WeatherSynthetic.py                      # released EXR dataset loader
 data/latent_datasets.py                       # HDF5 latent-cache dataset
