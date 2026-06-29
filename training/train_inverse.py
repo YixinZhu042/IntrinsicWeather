@@ -69,7 +69,7 @@ from data.latent_datasets import LatentDataset, split_dataset
 # from transformers import ViTImageProcessor, ViTForImageClassification
 from safetensors import safe_open
 from torch.utils.data.distributed import DistributedSampler
-from MAA import MAA, build_attn_mask
+from IMAA import IMAA, build_attn_mask
 import sys
 import os
 
@@ -265,20 +265,20 @@ def import_model_class_from_model_name_or_path(
     else:
         raise ValueError(f"{model_class} is not supported.")
 
-class MapAwareDiT(nn.Module):
-    def __init__(self, maa, transformer):
+class IMAADiT(nn.Module):
+    def __init__(self, imaa, transformer):
         super().__init__()
-        self.maa = maa
+        self.imaa = imaa
         self.transformer = transformer
     
     @property
     def device(self):
-        """Get the device of the transformer (which should be the same as maa after accelerator.prepare)"""
+        """Get the device of the transformer (which should be the same as imaa after accelerator.prepare)"""
         return next(self.transformer.parameters()).device
 
     def forward(self, patch_tokens, map_aware_mask_size, map_ids, hidden_states, encoder_hidden_states, timestep, pooled_projections):
 
-        map_aware_mask = self.maa(patch_tokens=patch_tokens, output_size=map_aware_mask_size, map_ids=map_ids)
+        map_aware_mask = self.imaa(patch_tokens=patch_tokens, output_size=map_aware_mask_size, map_ids=map_ids)
         # print("map_aware_mask.shape:", map_aware_mask.shape)
 
         attn_mask = build_attn_mask(map_aware_mask, encoder_hidden_states.shape[1], hidden_states.shape[-2] * hidden_states.shape[-1], 0.7)
@@ -1142,12 +1142,12 @@ def main(args):
         new_proj.weight[:, :16, :, :].copy_(transformer.pos_embed.proj.weight)
         transformer.pos_embed.proj = new_proj
 
-    maa = MAA(dino_model=None, processor=None, num_maps=5, map_embedding_dim=256, common_dim=128)
-    # Example: maa_ckpt = torch.load(os.environ["MAA_CHECKPOINT"], map_location="cpu")
-    # print(maa_ckpt.keys())
-    # maa.load_state_dict(maa_ckpt['model_state_dict'])
-    maa.train()
-    MAAtransformer = MapAwareDiT(maa=maa, transformer=transformer)
+    imaa = IMAA(dino_model=None, processor=None, num_maps=5, map_embedding_dim=256, common_dim=128)
+    # Example: imaa_ckpt = torch.load(os.environ["IMAA_CHECKPOINT"], map_location="cpu")
+    # print(imaa_ckpt.keys())
+    # imaa.load_state_dict(imaa_ckpt['model_state_dict'])
+    imaa.train()
+    IMAAtransformer = IMAADiT(imaa=imaa, transformer=transformer)
 
     # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora transformer) to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
@@ -1169,7 +1169,7 @@ def main(args):
         text_encoder_three.to(accelerator.device, dtype=weight_dtype)
 
     if args.gradient_checkpointing:
-        MAAtransformer.transformer.enable_gradient_checkpointing()
+        IMAAtransformer.transformer.enable_gradient_checkpointing()
         if args.train_text_encoder:
             text_encoder_one.gradient_checkpointing_enable()
             text_encoder_two.gradient_checkpointing_enable()
@@ -1248,7 +1248,7 @@ def main(args):
         )
 
     # Optimization parameters
-    transformer_parameters_with_lr = {"params": MAAtransformer.parameters(), "lr": args.learning_rate}
+    transformer_parameters_with_lr = {"params": IMAAtransformer.parameters(), "lr": args.learning_rate}
     if args.train_text_encoder:
         # different learning rate for text encoder and unet
         text_parameters_one_with_lr = {
@@ -1435,16 +1435,16 @@ def main(args):
             lr_scheduler,
         )
     else:
-        MAAtransformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            MAAtransformer, optimizer, train_dataloader, lr_scheduler
+        IMAAtransformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+            IMAAtransformer, optimizer, train_dataloader, lr_scheduler
         )
         
         # Debug info after accelerator.prepare
         if accelerator.is_main_process:
-            logger.info(f"MAAtransformer after prepare: {type(MAAtransformer)}")
-            logger.info(f"MAAtransformer device after prepare: {MAAtransformer.device}")
-            logger.info(f"MAA module device: {next(MAAtransformer.maa.parameters()).device}")
-            logger.info(f"Transformer module device: {next(MAAtransformer.transformer.parameters()).device}")
+            logger.info(f"IMAAtransformer after prepare: {type(IMAAtransformer)}")
+            logger.info(f"IMAAtransformer device after prepare: {IMAAtransformer.device}")
+            logger.info(f"IMAA module device: {next(IMAAtransformer.imaa.parameters()).device}")
+            logger.info(f"Transformer module device: {next(IMAAtransformer.transformer.parameters()).device}")
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1548,7 +1548,7 @@ def main(args):
     torch.cuda.empty_cache()
 
     for epoch in range(first_epoch, args.num_train_epochs):
-        MAAtransformer.train()
+        IMAAtransformer.train()
         if args.train_text_encoder:
             text_encoder_one.train()
             text_encoder_two.train()
@@ -1556,11 +1556,11 @@ def main(args):
 
         for step, batch in enumerate(train_dataloader):
           
-            models_to_accumulate = MAAtransformer
+            models_to_accumulate = IMAAtransformer
             if args.train_text_encoder:
                 models_to_accumulate.extend([text_encoder_one, text_encoder_two, text_encoder_three])
             with accelerator.accumulate(models_to_accumulate):
-                original_image_embeds = batch["latent_image"].to(MAAtransformer.device)
+                original_image_embeds = batch["latent_image"].to(IMAAtransformer.device)
                 # with torch.no_grad():
                 #     original_image_embeds = vae.encode(batch["im"].to(transformer.device)).latent_dist.sample()
                 # image = batch["im"].to(transformer.device)
@@ -1627,10 +1627,10 @@ def main(args):
 
                     # Predict the noise residual
                     if not args.train_text_encoder: 
-                        map_aware_mask_size = ((concatenated_noisy_latents.shape[-1] // MAAtransformer.transformer.config.patch_size), (concatenated_noisy_latents.shape[-2] // MAAtransformer.transformer.config.patch_size))
+                        map_aware_mask_size = ((concatenated_noisy_latents.shape[-1] // IMAAtransformer.transformer.config.patch_size), (concatenated_noisy_latents.shape[-2] // IMAAtransformer.transformer.config.patch_size))
                         # print("map_aware_mask_size:", map_aware_mask_size)
 
-                        map_aware_mask, model_pred = MAAtransformer(
+                        map_aware_mask, model_pred = IMAAtransformer(
                         patch_tokens=patch_tokens,
                         map_aware_mask_size=map_aware_mask_size,
                         map_ids=torch.tensor([i]*bsz).to(accelerator.device),
@@ -1707,13 +1707,13 @@ def main(args):
                     if accelerator.sync_gradients:
                         params_to_clip = (
                             itertools.chain(
-                                MAAtransformer.parameters(),
+                                IMAAtransformer.parameters(),
                                 text_encoder_one.parameters(),
                                 text_encoder_two.parameters(),
                                 text_encoder_three.parameters(),
                             )
                             if args.train_text_encoder
-                            else MAAtransformer.parameters()
+                            else IMAAtransformer.parameters()
                         )
                         accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
@@ -1800,8 +1800,8 @@ def main(args):
     # Add debug info before saving
     if accelerator.is_main_process:
         logger.info("Starting final checkpoint save...")
-        logger.info(f"MAAtransformer device: {MAAtransformer.device}")
-        logger.info(f"MAAtransformer type: {type(MAAtransformer)}")
+        logger.info(f"IMAAtransformer device: {IMAAtransformer.device}")
+        logger.info(f"IMAAtransformer type: {type(IMAAtransformer)}")
     
     save_path = os.path.join(args.output_dir, "last-checkpoint")
     
@@ -1814,10 +1814,10 @@ def main(args):
         if accelerator.is_main_process:
             os.makedirs(save_path, exist_ok=True)
             try:
-                # Save MAAtransformer components separately
-                unwrapped_model = unwrap_model(MAAtransformer)
+                # Save IMAAtransformer components separately
+                unwrapped_model = unwrap_model(IMAAtransformer)
                 torch.save({
-                    'maa_state_dict': unwrapped_model.maa.state_dict(),
+                    'imaa_state_dict': unwrapped_model.imaa.state_dict(),
                     'transformer_state_dict': unwrapped_model.transformer.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'global_step': global_step,
